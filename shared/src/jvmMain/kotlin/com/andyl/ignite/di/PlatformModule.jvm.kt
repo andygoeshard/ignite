@@ -3,6 +3,7 @@ package com.andyl.ignite.di
 import com.andyl.ignite.data.DeviceInfo
 import com.andyl.ignite.data.network.CompositeDeviceDiscovery
 import com.andyl.ignite.data.network.MdnsDeviceDiscovery
+import com.andyl.ignite.data.network.SubnetScannerDiscovery
 import com.andyl.ignite.data.network.UdpDeviceDiscovery
 import com.andyl.ignite.data.notification.JvmTransferNotifier
 import com.andyl.ignite.domain.DeviceDiscovery
@@ -16,6 +17,7 @@ actual fun platformModule(): Module = module {
             listOf(
                 UdpDeviceDiscovery(get<DeviceInfo>()),
                 MdnsDeviceDiscovery(get<DeviceInfo>()),
+                SubnetScannerDiscovery(get()),
             ),
         )
     }
