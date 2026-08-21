@@ -120,9 +120,24 @@ class UdpDeviceDiscovery(
         socket.close()
     }
 
+    private fun isPhysicalWifiInterface(ni: NetworkInterface): Boolean {
+        // En macOS: en0 = Wi-Fi, en1 = eth; en Android: wlan0. Excluimos VPN/VM que rompen el broadcast con VPN prendida.
+        val name = ni.name.lowercase()
+        if (name.startsWith("utun") || name.startsWith("feth") || name.startsWith("awdl") || name.startsWith("llw") || name.startsWith("bridge") || name == "lo0") return false
+        // Solo interfaces con IPv4 192.168.x o 10.x privado real, no link-local
+        return true
+    }
+
     private fun broadcastAddresses(): List<InetAddress> = buildList {
         add(InetAddress.getByName(BROADCAST_ADDRESS))
         runCatching {
+            NetworkInterface.getNetworkInterfaces().asSequence()
+                .filter { it.isUp && !it.isLoopback && isPhysicalWifiInterface(it) }
+                .flatMap { ni -> ni.interfaceAddresses.asSequence().mapNotNull { it.broadcast } }
+                .forEach { add(it) }
+        }
+        // Fallback: si filtramos todo (ej solo VPN), usa cualquier broadcast igual
+        if (size == 1) runCatching {
             NetworkInterface.getNetworkInterfaces().asSequence()
                 .filter { it.isUp && !it.isLoopback }
                 .flatMap { ni -> ni.interfaceAddresses.asSequence().mapNotNull { it.broadcast } }
@@ -134,7 +149,12 @@ class UdpDeviceDiscovery(
         NetworkInterface.getNetworkInterfaces().asSequence()
             .filter { it.isUp && !it.isLoopback }
             .flatMap { ni -> ni.inetAddresses.asSequence().filter { !it.isLoopbackAddress } }
-            .map { "${it.hostAddress} (${it.hostAddress?.let { addr -> NetworkInterface.getByInetAddress(InetAddress.getByName(addr))?.name } ?: "?"})" }
+            .map { addr ->
+                val ni = runCatching { NetworkInterface.getByInetAddress(addr) }.getOrNull()
+                val niName = ni?.name ?: "?"
+                val mark = if (ni != null && isPhysicalWifiInterface(ni)) "" else " [VPN/VM-ignorado]"
+                "${addr.hostAddress} ($niName)$mark"
+            }
             .toList()
     }.getOrElse { emptyList() }
 

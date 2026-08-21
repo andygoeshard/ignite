@@ -54,13 +54,27 @@ class HomeViewModel(
         myPin = runCatching { pairingManager.getPin() }.getOrDefault(""),
     )
 
+    private fun isPhysicalWifiInterface(ni: java.net.NetworkInterface): Boolean {
+        val n = ni.name.lowercase()
+        return !(n.startsWith("utun") || n.startsWith("feth") || n.startsWith("awdl") || n.startsWith("llw") || n.startsWith("bridge") || n == "lo0")
+    }
+
     private fun getLocalIp(): String = runCatching {
+        // Prioriza en0 (Wi-Fi real) y evita 10.243.x de VPN
         java.net.NetworkInterface.getNetworkInterfaces().asSequence()
-            .filter { it.isUp && !it.isLoopback }
+            .filter { it.isUp && !it.isLoopback && isPhysicalWifiInterface(it) }
             .flatMap { it.inetAddresses.asSequence() }
-            .filter { !it.isLoopbackAddress && it is java.net.Inet4Address }
+            .filter { !it.isLoopbackAddress && it is java.net.Inet4Address && it.hostAddress?.startsWith("192.168.") == true }
             .map { it.hostAddress ?: "" }
-            .firstOrNull { it.startsWith("192.168.") || it.startsWith("10.") } ?: ""
+            .firstOrNull() ?: run {
+            // Fallback a cualquier 192.168
+            java.net.NetworkInterface.getNetworkInterfaces().asSequence()
+                .filter { it.isUp && !it.isLoopback }
+                .flatMap { it.inetAddresses.asSequence() }
+                .filter { !it.isLoopbackAddress && it is java.net.Inet4Address }
+                .map { it.hostAddress ?: "" }
+                .firstOrNull { it.startsWith("192.168.") } ?: ""
+        }
     }.getOrDefault("")
 
     init {
