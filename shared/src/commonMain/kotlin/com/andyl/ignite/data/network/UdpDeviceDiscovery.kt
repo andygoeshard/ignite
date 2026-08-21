@@ -77,7 +77,10 @@ class UdpDeviceDiscovery(
             }
             if (!loggedTargets) {
                 loggedTargets = true
-                println("[Ignite] announcing as '${deviceInfo.deviceName}' (${deviceInfo.deviceId.take(8)}) to: ${broadcastAddresses().mapNotNull { it.hostAddress }}")
+                val locals = localIps()
+                println("[Ignite] local IPs: $locals")
+                println("[Ignite] announcing as '${deviceInfo.deviceName}' (${deviceInfo.deviceId.take(8)}) to broadcasts: ${broadcastAddresses().mapNotNull { it.hostAddress }}")
+                println("[Ignite] tip: tu IP local real debe coincidir en los 3 primeros octetos con la del otro. Si ves 10.x o 192.168.196.x es VPN/VM, no tu Wi-Fi. Usa 'ifconfig | grep inet' y conecta manual con esa IP.")
             }
 
             // Listen for beacons (non-blocking poll).
@@ -126,6 +129,14 @@ class UdpDeviceDiscovery(
                 .forEach { add(it) }
         }
     }.distinctBy { it.hostAddress }
+
+    private fun localIps(): List<String> = runCatching {
+        NetworkInterface.getNetworkInterfaces().asSequence()
+            .filter { it.isUp && !it.isLoopback }
+            .flatMap { ni -> ni.inetAddresses.asSequence().filter { !it.isLoopbackAddress } }
+            .map { "${it.hostAddress} (${it.hostAddress?.let { addr -> NetworkInterface.getByInetAddress(InetAddress.getByName(addr))?.name } ?: "?"})" }
+            .toList()
+    }.getOrElse { emptyList() }
 
     private fun beaconBytes(): ByteArray {
         val beacon = Beacon(

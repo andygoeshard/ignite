@@ -47,11 +47,21 @@ class HomeViewModel(
 
     override fun initialState(): HomeState = HomeState(
         deviceName = runCatching { deviceInfo.deviceName }.getOrDefault(""),
+        localIp = getLocalIp(),
         showWelcome = runCatching { !deviceInfo.hasCustomName }.getOrDefault(false),
         downloadPath = runCatching { storage.receiveDir() }.getOrDefault(""),
         canChooseDownloadDir = supportsCustomDownloadDir,
         myPin = runCatching { pairingManager.getPin() }.getOrDefault(""),
     )
+
+    private fun getLocalIp(): String = runCatching {
+        java.net.NetworkInterface.getNetworkInterfaces().asSequence()
+            .filter { it.isUp && !it.isLoopback }
+            .flatMap { it.inetAddresses.asSequence() }
+            .filter { !it.isLoopbackAddress && it is java.net.Inet4Address }
+            .map { it.hostAddress ?: "" }
+            .firstOrNull { it.startsWith("192.168.") || it.startsWith("10.") } ?: ""
+    }.getOrDefault("")
 
     init {
         startInfrastructure()
@@ -202,7 +212,30 @@ class HomeViewModel(
             HomeEvent.OnApproveIncoming -> decideApproval(true)
             HomeEvent.OnRejectIncoming -> decideApproval(false)
             HomeEvent.OnTogglePinDialog -> updateState { it.copy(showPinDialog = !it.showPinDialog, myPin = runCatching { pairingManager.getPin() }.getOrDefault(it.myPin)) }
+            is HomeEvent.OnManualIpChanged -> updateState { it.copy(manualIp = event.ip.trim().take(45)) }
+            HomeEvent.OnManualConnect -> connectManual()
         }
+    }
+
+    private fun connectManual() {
+        val ip = state.value.manualIp.trim()
+        if (!isValidIp(ip)) {
+            showNote("IP inválida: $ip")
+            return
+        }
+        val device = Device(id = "manual-$ip", name = "Manual ($ip)", host = ip, port = com.andyl.ignite.domain.model.TransferDefaults.PORT)
+        val updated = (_devices.value.filterNot { it.id == device.id } + device).sortedBy { it.name.lowercase() }
+        _devices.value = updated
+        lastSeenByDevice[device.id] = System.currentTimeMillis()
+        updateState { it.copy(devices = updated, selectedDevice = device, manualIp = "") }
+        showNote("Conectado manualmente a $ip — ahora ingresá su PIN y enviá")
+    }
+
+    private fun isValidIp(ip: String): Boolean {
+        if (ip.isBlank()) return false
+        val ipv4 = ip.matches(Regex("""\d{1,3}(\.\d{1,3}){3}"""))
+        val ipv6 = ip.contains(":")
+        return ipv4 || ipv6
     }
 
     private fun rename(name: String) {

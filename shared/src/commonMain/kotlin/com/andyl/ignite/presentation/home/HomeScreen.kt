@@ -8,18 +8,22 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Computer
@@ -77,67 +81,94 @@ fun HomeScreen(
     onPickFile: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        val isWide = maxWidth > 720.dp
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
         Header(
             deviceName = state.deviceName,
+            localIp = state.localIp,
             note = state.note,
             onRefresh = { onEvent(HomeEvent.OnRefresh) },
         )
 
-        PinCard(
-            myPin = state.myPin,
-            onRegenerate = { onEvent(HomeEvent.OnRegeneratePin) },
-            onToggleDialog = { onEvent(HomeEvent.OnTogglePinDialog) },
-        )
-
-        // Dialog de aprobación que bloquea hasta decidir (antes de escribir a disco)
-        state.pendingApproval?.let { pending ->
-            ApprovalCard(
-                pending = pending,
-                onApprove = { onEvent(HomeEvent.OnApproveIncoming) },
-                onReject = { onEvent(HomeEvent.OnRejectIncoming) },
+            PinCard(
+                myPin = state.myPin,
+                onRegenerate = { onEvent(HomeEvent.OnRegeneratePin) },
+                onToggleDialog = { onEvent(HomeEvent.OnTogglePinDialog) },
             )
-        }
 
-        RadarCard(
-            devices = state.devices,
-            selected = state.selectedDevice,
-            isScanning = state.isScanning,
-            onSelect = { onEvent(HomeEvent.OnDeviceSelected(it)) },
-        )
-
-        // PIN del receptor (requerido para enviar)
-        if (state.selectedDevice != null) {
-            OutlinedTextField(
-                value = state.targetPin,
-                onValueChange = { onEvent(HomeEvent.OnTargetPinChanged(it)) },
-                label = { Text("PIN del receptor (6 dígitos)") },
-                placeholder = { Text("Ej: ${state.myPin}") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            if (state.targetPin.isNotEmpty() && state.targetPin.length != 6) {
-                Text(
-                    "El PIN debe ser de 6 dígitos",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error,
+            // Dialog de aprobación que bloquea hasta decidir (antes de escribir a disco)
+            state.pendingApproval?.let { pending ->
+                ApprovalCard(
+                    pending = pending,
+                    onApprove = { onEvent(HomeEvent.OnApproveIncoming) },
+                    onReject = { onEvent(HomeEvent.OnRejectIncoming) },
                 )
             }
-        }
 
-        if (state.pendingFiles.isNotEmpty()) {
-            FileQueue(
-                files = state.pendingFiles,
-                onClear = { onEvent(HomeEvent.OnFileCleared(it)) },
-            )
-        }
+            if (isWide) {
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                    Box(Modifier.weight(1f)) {
+                        RadarCard(
+                            devices = state.devices,
+                            selected = state.selectedDevice,
+                            isScanning = state.isScanning,
+                            onSelect = { onEvent(HomeEvent.OnDeviceSelected(it)) },
+                        )
+                    }
+                    Box(Modifier.weight(1f)) {
+                        ManualConnectCard(
+                            manualIp = state.manualIp,
+                            onIpChanged = { onEvent(HomeEvent.OnManualIpChanged(it)) },
+                            onConnect = { onEvent(HomeEvent.OnManualConnect) },
+                        )
+                    }
+                }
+            } else {
+                RadarCard(
+                    devices = state.devices,
+                    selected = state.selectedDevice,
+                    isScanning = state.isScanning,
+                    onSelect = { onEvent(HomeEvent.OnDeviceSelected(it)) },
+                )
+                ManualConnectCard(
+                    manualIp = state.manualIp,
+                    onIpChanged = { onEvent(HomeEvent.OnManualIpChanged(it)) },
+                    onConnect = { onEvent(HomeEvent.OnManualConnect) },
+                )
+            }
 
-        Spacer(Modifier.weight(1f))
+            // PIN del receptor (requerido para enviar)
+            if (state.selectedDevice != null) {
+                OutlinedTextField(
+                    value = state.targetPin,
+                    onValueChange = { onEvent(HomeEvent.OnTargetPinChanged(it)) },
+                    label = { Text("PIN del receptor (6 dígitos)") },
+                    placeholder = { Text("Ej: ${state.myPin}") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (state.targetPin.isNotEmpty() && state.targetPin.length != 6) {
+                    Text(
+                        "El PIN debe ser de 6 dígitos",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+
+            if (state.pendingFiles.isNotEmpty()) {
+                FileQueue(
+                    files = state.pendingFiles,
+                    onClear = { onEvent(HomeEvent.OnFileCleared(it)) },
+                )
+            }
 
         AnimatedVisibility(
             visible = state.recentReceived.isNotEmpty(),
@@ -179,15 +210,17 @@ fun HomeScreen(
                     state.isSending -> "Enviando…"
                     state.selectedDevice == null -> "Elegí un dispositivo de la lista"
                     state.pendingFiles.isEmpty() -> "Seleccioná un archivo para enviar"
+                    state.targetPin.length != 6 -> "Ingresá el PIN de 6 dígitos"
                     else -> "Enviar a ${state.selectedDevice.name}"
                 },
             )
+        }
         }
     }
 }
 
 @Composable
-private fun Header(deviceName: String, note: String?, onRefresh: () -> Unit) {
+private fun Header(deviceName: String, localIp: String, note: String?, onRefresh: () -> Unit) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -207,6 +240,14 @@ private fun Header(deviceName: String, note: String?, onRefresh: () -> Unit) {
                 text = "Visible en la red como «$deviceName»",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (localIp.isNotBlank()) {
+            Text(
+                text = "Tu IP local: $localIp — el otro debe estar en la misma (192.168.x)",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.padding(top = 2.dp),
             )
         }
         AnimatedVisibility(visible = !note.isNullOrBlank(), enter = fadeIn() + expandVertically()) {
@@ -265,9 +306,10 @@ private fun RadarCard(
                     )
                 }
             } else {
+                // heightIn hace que sea responsive y no corte en pantallas chicas dentro de un scroll padre
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.height(160.dp),
+                    modifier = Modifier.heightIn(min = 120.dp, max = 260.dp).fillMaxWidth(),
                 ) {
                     items(devices, key = { it.id }) { device ->
                         DeviceRow(
@@ -548,6 +590,35 @@ private fun PinCard(myPin: String, onRegenerate: () -> Unit, onToggleDialog: () 
             }
             IconButton(onClick = onRegenerate) {
                 Icon(Icons.Default.Refresh, contentDescription = "Regenerar PIN")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ManualConnectCard(manualIp: String, onIpChanged: (String) -> Unit, onConnect: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Conexión manual (si no se ven)", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "Si Mac no ve a Windows (firewall/VLAN), ingresá la IP del otro. En Windows: ipconfig → IPv4. En Mac: ifconfig | grep inet",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = manualIp,
+                    onValueChange = onIpChanged,
+                    label = { Text("IP del otro") },
+                    placeholder = { Text("192.168.1.10") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                )
+                Button(onClick = onConnect, enabled = manualIp.isNotBlank()) { Text("Conectar") }
             }
         }
     }

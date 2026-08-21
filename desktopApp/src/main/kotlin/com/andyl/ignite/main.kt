@@ -23,11 +23,14 @@ fun main() = application {
         println("[Ignite] shutdown hook: server & discovery stopped")
     })
 
+    val windowState = androidx.compose.ui.window.rememberWindowState(width = 500.dp, height = 860.dp)
+    // Permite resize y adapta el contenido via BoxWithConstraints en HomeScreen
     Window(
         onCloseRequest = ::exitApplication,
         title = "Ignite",
-        state = androidx.compose.ui.window.rememberWindowState(width = 420.dp, height = 760.dp),
+        state = windowState,
     ) {
+        // En desktop el contenido ya es scrollable y responsive (verticalScroll + BoxWithConstraints >720dp = 2 columnas)
         App()
     }
 }

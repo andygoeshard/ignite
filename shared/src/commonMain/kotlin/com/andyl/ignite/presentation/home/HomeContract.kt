@@ -57,6 +57,8 @@ sealed interface HomeEvent {
     data object OnApproveIncoming : HomeEvent
     data object OnRejectIncoming : HomeEvent
     data object OnTogglePinDialog : HomeEvent
+    data class OnManualIpChanged(val ip: String) : HomeEvent
+    data object OnManualConnect : HomeEvent
 }
 
 data class HomeState(
@@ -69,11 +71,13 @@ data class HomeState(
     val activeFileName: String? = null,
     val error: String? = null,
     val deviceName: String = "",
+    val localIp: String = "",
     val showWelcome: Boolean = false,
     val showProfileDialog: Boolean = false,
     val showPinDialog: Boolean = false,
     val myPin: String = "",
     val targetPin: String = "",
+    val manualIp: String = "",
     val pendingApproval: PendingApprovalUi? = null,
     val incoming: IncomingFileUi? = null,
     val recentReceived: List<ReceivedFileUi> = emptyList(),
