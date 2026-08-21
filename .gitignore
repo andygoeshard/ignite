@@ -1,19 +1,39 @@
-*.iml
-.kotlin
-.gradle
+# Gradle
+.gradle/
 **/build/
-xcuserdata
-!src/**/build/
+build/
+.kotlin/
+
+# Android / IntelliJ
+.idea/
+*.iml
 local.properties
-.idea
-.DS_Store
 captures
 .externalNativeBuild
 .cxx
+
+# macOS
+.DS_Store
+
+# iOS (dormido hasta reincorporar el target)
+xcuserdata
 *.xcodeproj/*
 !*.xcodeproj/project.pbxproj
 !*.xcodeproj/xcshareddata/
 !*.xcodeproj/project.xcworkspace/
 !*.xcworkspace/contents.xcworkspacedata
 **/xcshareddata/WorkspaceSettings.xcsettings
+
+# Room schema export (exportSchema = false por ahora)
+shared/schemas/
+
+# Logs y dumps
+*.log
+*.hprof
+
+# Node (no usado, por si acaso)
 node_modules/
+
+# Archivos de entorno
+.env
+.env.*
