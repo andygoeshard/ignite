@@ -20,6 +20,7 @@ import com.andyl.ignite.presentation.home.HomeViewModel
 import com.andyl.ignite.presentation.history.HistoryViewModel
 import io.ktor.client.HttpClient
 import org.koin.core.module.Module
+import org.koin.core.module.dsl.viewModel
 import org.koin.core.module.dsl.viewModelOf
 import org.koin.dsl.module
 
@@ -52,6 +53,17 @@ val appModule: Module = module {
         )
     }
 
-    viewModelOf(::HomeViewModel)
+    viewModel {
+        HomeViewModel(
+            discovery = get(),
+            sender = get(),
+            receiver = get(),
+            repository = get(),
+            deviceInfo = get(),
+            storage = get(),
+            notifier = get(),
+            pairingManager = get(),
+        )
+    }
     viewModelOf(::HistoryViewModel)
 }
