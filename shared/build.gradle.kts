@@ -80,6 +80,8 @@ kotlin {
             implementation(libs.kotlin.test)
             implementation(libs.ktor.client.mock)
             implementation(libs.koin.test)
+            implementation(libs.turbine)
+            implementation(libs.kotlinx.coroutinesTest)
         }
         jvmMain.dependencies {
             implementation(libs.ktor.client.cio)

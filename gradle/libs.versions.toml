@@ -19,6 +19,7 @@ kotlinx-serialization = "1.9.0"
 ksp = "2.3.11"
 ktor = "3.5.2"
 material3 = "1.11.0-alpha07"
+turbine = "1.2.1"
 materialIcons = "1.7.3"
 navigation3 = "1.1.1"
 room = "2.8.4"
@@ -84,6 +85,10 @@ lifecycle-viewmodel-navigation3 = { module = "org.jetbrains.androidx.lifecycle:l
 filekit-core = { module = "io.github.vinceglb:filekit-core", version.ref = "filekit" }
 filekit-dialogs = { module = "io.github.vinceglb:filekit-dialogs", version.ref = "filekit" }
 filekit-dialogs-compose = { module = "io.github.vinceglb:filekit-dialogs-compose", version.ref = "filekit" }
+
+# Testing
+turbine = { module = "app.cash.turbine:turbine", version.ref = "turbine" }
+kotlinx-coroutinesTest = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }

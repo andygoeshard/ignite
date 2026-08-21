@@ -20,6 +20,7 @@ import kotlinx.serialization.json.Json
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.NetworkInterface
 import java.nio.charset.Charset
 
 /**
@@ -61,14 +62,22 @@ class UdpDeviceDiscovery(
         socket.bind(java.net.InetSocketAddress(port))
 
         val buffer = ByteArray(MAX_PACKET)
-        val announce = beaconBytes()
+        var loggedTargets = false
 
         while (scope.isActive) {
-            // Announce our presence to the broadcast address.
-            try {
-                val broadcast = InetAddress.getByName(BROADCAST_ADDRESS)
-                socket.send(DatagramPacket(announce, announce.size, broadcast, port))
-            } catch (_: Exception) {
+            val announce = beaconBytes()
+            // Announce our presence on every broadcast address (global + per-interface).
+            // Sending only to 255.255.255.255 can miss peers when the machine has
+            // virtual adapters (WSL/Hyper-V/Docker on Windows, utun on macOS).
+            for (address in broadcastAddresses()) {
+                try {
+                    socket.send(DatagramPacket(announce, announce.size, address, port))
+                } catch (_: Exception) {
+                }
+            }
+            if (!loggedTargets) {
+                loggedTargets = true
+                println("[Ignite] announcing as '${deviceInfo.deviceName}' (${deviceInfo.deviceId.take(8)}) to: ${broadcastAddresses().mapNotNull { it.hostAddress }}")
             }
 
             // Listen for beacons (non-blocking poll).
@@ -91,6 +100,7 @@ class UdpDeviceDiscovery(
                 }
                 if (beacon.deviceId == deviceInfo.deviceId) continue
 
+                println("[Ignite] beacon received from '${beacon.deviceName}' at ${packet.address.hostAddress}:${beacon.port}")
                 _devices.tryEmit(
                     Device(
                         id = beacon.deviceId,
@@ -106,6 +116,16 @@ class UdpDeviceDiscovery(
 
         socket.close()
     }
+
+    private fun broadcastAddresses(): List<InetAddress> = buildList {
+        add(InetAddress.getByName(BROADCAST_ADDRESS))
+        runCatching {
+            NetworkInterface.getNetworkInterfaces().asSequence()
+                .filter { it.isUp && !it.isLoopback }
+                .flatMap { ni -> ni.interfaceAddresses.asSequence().mapNotNull { it.broadcast } }
+                .forEach { add(it) }
+        }
+    }.distinctBy { it.hostAddress }
 
     private fun beaconBytes(): ByteArray {
         val beacon = Beacon(

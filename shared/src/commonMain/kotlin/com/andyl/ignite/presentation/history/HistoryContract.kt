@@ -10,8 +10,7 @@ sealed interface HistoryEvent {
 data class HistoryState(
     val transfers: List<Transfer> = emptyList(),
     val isLoading: Boolean = true,
+    val note: String? = null,
 )
 
-sealed interface HistoryEffect {
-    data class ShowMessage(val text: String) : HistoryEffect
-}
+sealed interface HistoryEffect

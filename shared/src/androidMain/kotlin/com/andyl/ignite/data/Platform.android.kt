@@ -8,12 +8,46 @@ import java.io.File
 import java.util.UUID
 
 actual class AppStorage {
-    actual fun receiveDir(): String = File(FileKit.filesDir.path, "received").absolutePath
+    actual fun receiveDir(): String = customDir() ?: File(FileKit.filesDir.path, "received").absolutePath
+
+    actual fun setReceiveDir(path: String?) {
+        val file = File(FileKit.filesDir.path, "download_dir")
+        if (path.isNullOrBlank()) {
+            file.delete()
+        } else {
+            file.parentFile?.mkdirs()
+            file.writeText(path.trim())
+        }
+    }
+
+    private fun customDir(): String? {
+        val file = File(FileKit.filesDir.path, "download_dir")
+        val path = if (file.exists()) file.readText().trim() else ""
+        return path.ifBlank { null }
+    }
 }
 
 actual class DeviceInfo {
     actual val deviceId: String by lazy { resolveDeviceId() }
-    actual val deviceName: String get() = Build.MODEL
+    actual val deviceName: String get() = customName() ?: Build.MODEL
+    actual val hasCustomName: Boolean get() = nameFile().exists()
+
+    actual fun rename(name: String) {
+        val file = nameFile()
+        if (name.isBlank()) {
+            file.delete()
+        } else {
+            file.writeText(name.trim())
+        }
+    }
+
+    private fun customName(): String? {
+        val file = nameFile()
+        if (!file.exists()) return null
+        return file.readText().trim().ifBlank { null }
+    }
+
+    private fun nameFile() = File(FileKit.filesDir.path, "device_name")
 
     private fun resolveDeviceId(): String {
         val idFile = File(FileKit.filesDir.path, "device_id")
@@ -29,3 +63,7 @@ actual val appId: String = "com.andyl.ignite"
 actual fun createAppStorage(): AppStorage = AppStorage()
 
 actual fun createDeviceInfo(): DeviceInfo = DeviceInfo()
+
+actual fun revealInFileManager(path: String): Boolean = false
+
+actual val supportsCustomDownloadDir: Boolean = false

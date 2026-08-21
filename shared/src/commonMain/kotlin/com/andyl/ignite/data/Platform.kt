@@ -5,6 +5,11 @@ package com.andyl.ignite.data
  */
 expect class AppStorage {
     fun receiveDir(): String
+
+    /**
+     * Overrides the download directory. Pass null to fall back to the default.
+     */
+    fun setReceiveDir(path: String?)
 }
 
 /**
@@ -14,6 +19,9 @@ expect class AppStorage {
 expect class DeviceInfo {
     val deviceId: String
     val deviceName: String
+    val hasCustomName: Boolean
+
+    fun rename(name: String)
 }
 
 /**
@@ -24,4 +32,15 @@ expect val appId: String
 expect fun createAppStorage(): AppStorage
 
 expect fun createDeviceInfo(): DeviceInfo
+
+/**
+ * Opens the system file manager showing [path]'s parent folder.
+ * Returns false when the platform cannot do it.
+ */
+expect fun revealInFileManager(path: String): Boolean
+
+/**
+ * Whether the platform supports picking a custom download directory.
+ */
+expect val supportsCustomDownloadDir: Boolean
 

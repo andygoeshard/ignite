@@ -13,6 +13,7 @@ import com.andyl.ignite.data.network.createHttpClient
 import com.andyl.ignite.data.network.createServerEngine
 import com.andyl.ignite.domain.FileReceiver
 import com.andyl.ignite.domain.FileSender
+import com.andyl.ignite.domain.PairingManager
 import com.andyl.ignite.domain.TransferRepository
 import com.andyl.ignite.domain.model.TransferDefaults
 import com.andyl.ignite.presentation.home.HomeViewModel
@@ -33,6 +34,7 @@ val appModule: Module = module {
 
     single<AppStorage> { createAppStorage() }
     single<DeviceInfo> { createDeviceInfo() }
+    single<PairingManager> { PairingManager() }
 
     single<IgniteDatabase> { createDatabase() }
     single<TransferRepository> {
@@ -44,6 +46,7 @@ val appModule: Module = module {
         KtorFileReceiver(
             storage = get(),
             repository = get(),
+            pairingManager = get(),
             port = TransferDefaults.PORT,
             engineFactory = ::createServerEngine,
         )

@@ -1,5 +1,8 @@
 package com.andyl.ignite.presentation.home
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -16,20 +19,26 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Computer
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,6 +56,7 @@ fun HomeRoute(
     state: HomeState,
     onEvent: (HomeEvent) -> Unit,
     onPickFile: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     DroppableArea(onFiles = { files ->
         files.forEach { onEvent(HomeEvent.OnFileSelected(it)) }
@@ -55,6 +65,7 @@ fun HomeRoute(
             state = state,
             onEvent = onEvent,
             onPickFile = onPickFile,
+            modifier = modifier,
         )
     }
 }
@@ -64,14 +75,34 @@ fun HomeScreen(
     state: HomeState,
     onEvent: (HomeEvent) -> Unit,
     onPickFile: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxSize()
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Header(onRefresh = { onEvent(HomeEvent.OnRefresh) })
+        Header(
+            deviceName = state.deviceName,
+            note = state.note,
+            onRefresh = { onEvent(HomeEvent.OnRefresh) },
+        )
+
+        PinCard(
+            myPin = state.myPin,
+            onRegenerate = { onEvent(HomeEvent.OnRegeneratePin) },
+            onToggleDialog = { onEvent(HomeEvent.OnTogglePinDialog) },
+        )
+
+        // Dialog de aprobación que bloquea hasta decidir (antes de escribir a disco)
+        state.pendingApproval?.let { pending ->
+            ApprovalCard(
+                pending = pending,
+                onApprove = { onEvent(HomeEvent.OnApproveIncoming) },
+                onReject = { onEvent(HomeEvent.OnRejectIncoming) },
+            )
+        }
 
         RadarCard(
             devices = state.devices,
@@ -80,6 +111,25 @@ fun HomeScreen(
             onSelect = { onEvent(HomeEvent.OnDeviceSelected(it)) },
         )
 
+        // PIN del receptor (requerido para enviar)
+        if (state.selectedDevice != null) {
+            OutlinedTextField(
+                value = state.targetPin,
+                onValueChange = { onEvent(HomeEvent.OnTargetPinChanged(it)) },
+                label = { Text("PIN del receptor (6 dígitos)") },
+                placeholder = { Text("Ej: ${state.myPin}") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (state.targetPin.isNotEmpty() && state.targetPin.length != 6) {
+                Text(
+                    "El PIN debe ser de 6 dígitos",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
+
         if (state.pendingFiles.isNotEmpty()) {
             FileQueue(
                 files = state.pendingFiles,
@@ -87,21 +137,36 @@ fun HomeScreen(
             )
         }
 
+        Spacer(Modifier.weight(1f))
+
+        AnimatedVisibility(
+            visible = state.recentReceived.isNotEmpty(),
+            enter = fadeIn() + expandVertically(),
+        ) {
+            RecentReceivedCard(
+                files = state.recentReceived,
+                onOpenFolder = { onEvent(HomeEvent.OnOpenReceivedFolder(it)) },
+            )
+        }
+
         if (state.isSending || state.activeFileName != null) {
             ProgressCard(
                 fileName = state.activeFileName.orEmpty(),
                 progress = state.progress,
+                totalBytes = state.pendingFiles.sumOf { it.sizeBytes },
             )
+        } else {
+            state.sendOutcome?.let { outcome ->
+                SendOutcomeRow(outcome)
+            }
         }
-
-        Spacer(Modifier.weight(1f))
 
         OutlinedButton(
             onClick = onPickFile,
             enabled = !state.isSending,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text("Seleccionar archivo")
+            Text(if (state.pendingFiles.isEmpty()) "Seleccionar archivo" else "Agregar otro archivo")
         }
 
         Button(
@@ -110,26 +175,47 @@ fun HomeScreen(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text(
-                if (state.isSending) "Enviando..."
-                else "Enviar a ${state.selectedDevice?.name ?: "dispositivo"}",
+                when {
+                    state.isSending -> "Enviando…"
+                    state.selectedDevice == null -> "Elegí un dispositivo de la lista"
+                    state.pendingFiles.isEmpty() -> "Seleccioná un archivo para enviar"
+                    else -> "Enviar a ${state.selectedDevice.name}"
+                },
             )
         }
     }
 }
 
 @Composable
-private fun Header(onRefresh: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            text = "Ignite",
-            style = MaterialTheme.typography.headlineMedium,
-            modifier = Modifier.weight(1f),
-        )
-        IconButton(onClick = onRefresh) {
-            Icon(Icons.Default.Refresh, contentDescription = "Buscar de nuevo")
+private fun Header(deviceName: String, note: String?, onRefresh: () -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Ignite",
+                style = MaterialTheme.typography.headlineMedium,
+                modifier = Modifier.weight(1f),
+            )
+            IconButton(onClick = onRefresh) {
+                Icon(Icons.Default.Refresh, contentDescription = "Buscar de nuevo")
+            }
+        }
+        if (deviceName.isNotBlank()) {
+            Text(
+                text = "Visible en la red como «$deviceName»",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        AnimatedVisibility(visible = !note.isNullOrBlank(), enter = fadeIn() + expandVertically()) {
+            Text(
+                text = note.orEmpty(),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(top = 4.dp),
+            )
         }
     }
 }
@@ -148,7 +234,8 @@ private fun RadarCard(
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Dispositivos", style = MaterialTheme.typography.titleMedium)
+                val title = if (devices.isEmpty()) "Dispositivos" else "Dispositivos (${devices.size})"
+                Text(title, style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.width(8.dp))
                 if (isScanning) {
                     CircularProgressIndicator(
@@ -163,11 +250,20 @@ private fun RadarCard(
 
             if (devices.isEmpty()) {
                 Text(
-                    text = "Buscando dispositivos en la red local...",
+                    text = if (isScanning) "Buscando dispositivos en la red local…"
+                    else "No hay dispositivos. Tocá ↻ para buscar de nuevo.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 12.dp),
                 )
+                if (isScanning) {
+                    Text(
+                        text = "Tip: ambos dispositivos tienen que estar en la misma red Wi-Fi y con la app abierta.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
             } else {
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -242,7 +338,6 @@ private fun RadarGraph(devices: List<Device>) {
             val center = Offset(size.width / 2, size.height / 2)
             val maxR = sizePx / 2f
 
-            // Radar rings
             val ringColor = primary.copy(alpha = 0.2f)
             for (i in 1..3) {
                 drawCircle(
@@ -253,7 +348,6 @@ private fun RadarGraph(devices: List<Device>) {
                 )
             }
 
-            // Device blips positioned radially.
             val n = devices.size
             devices.forEachIndexed { index, _ ->
                 val angle = (index.toDouble() / n.toDouble()) * Math.PI * 2
@@ -298,6 +392,13 @@ private fun FileQueue(
                         .padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    Icon(
+                        Icons.Default.Description,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
                     Text(
                         text = file.name,
                         style = MaterialTheme.typography.bodyMedium,
@@ -310,6 +411,78 @@ private fun FileQueue(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    IconButton(onClick = { onClear(file) }, modifier = Modifier.size(28.dp)) {
+                        Text(
+                            "✕",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            if (files.size > 1) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "${files.size} archivos · ${formatSize(files.sumOf { it.sizeBytes })} en total",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecentReceivedCard(
+    files: List<ReceivedFileUi>,
+    onOpenFolder: (ReceivedFileUi) -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp, end = 8.dp)) {
+            Text(
+                "Recibidos recientemente",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            Spacer(Modifier.height(4.dp))
+            files.take(3).forEach { file ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Default.Description,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = file.fileName,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = formatSize(file.sizeBytes),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        )
+                    }
+                    IconButton(onClick = { onOpenFolder(file) }) {
+                        Icon(
+                            Icons.Default.Folder,
+                            contentDescription = "Abrir carpeta",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                 }
             }
         }
@@ -317,7 +490,7 @@ private fun FileQueue(
 }
 
 @Composable
-private fun ProgressCard(fileName: String, progress: Float) {
+private fun ProgressCard(fileName: String, progress: Float, totalBytes: Long) {
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.primaryContainer,
@@ -325,31 +498,104 @@ private fun ProgressCard(fileName: String, progress: Float) {
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
-                text = "Enviando: $fileName",
+                text = "Enviando a… $fileName",
                 style = MaterialTheme.typography.titleSmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.height(8.dp))
             LinearProgressIndicator(
-                progress = { progress },
+                progress = { progress.coerceIn(0f, 1f) },
                 modifier = Modifier.fillMaxWidth(),
             )
             Spacer(Modifier.height(4.dp))
+            val detail = if (totalBytes > 0) {
+                "${formatSize((totalBytes * progress).toLong())} de ${formatSize(totalBytes)}"
+            } else {
+                "${(progress * 100).toInt()}%"
+            }
             Text(
-                text = "${(progress * 100).toInt()}%",
+                text = detail,
                 style = MaterialTheme.typography.bodySmall,
             )
         }
     }
 }
 
-private fun formatSize(bytes: Long): String {
-    if (bytes < 1024) return "$bytes B"
-    val kb = bytes / 1024.0
-    if (kb < 1024) return "%.1f KB".format(kb)
-    val mb = kb / 1024.0
-    if (mb < 1024) return "%.1f MB".format(mb)
-    val gb = mb / 1024.0
-    return "%.2f GB".format(gb)
+@Composable
+private fun PinCard(myPin: String, onRegenerate: () -> Unit, onToggleDialog: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Tu PIN de emparejamiento", style = MaterialTheme.typography.labelMedium)
+                Text(
+                    myPin.ifBlank { "------" },
+                    style = MaterialTheme.typography.headlineMedium,
+                    letterSpacing = androidx.compose.ui.unit.TextUnit(8f, androidx.compose.ui.unit.TextUnitType.Sp),
+                )
+                Text(
+                    "Compartí este código con quien te envía. Valida el header X-Ignite-Pin.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+            }
+            IconButton(onClick = onRegenerate) {
+                Icon(Icons.Default.Refresh, contentDescription = "Regenerar PIN")
+            }
+        }
+    }
+}
+
+@Composable
+private fun ApprovalCard(pending: PendingApprovalUi, onApprove: () -> Unit, onReject: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.errorContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("¿Aceptar archivo?", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onErrorContainer)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "«${pending.fileName}» de ${pending.peerName} (${formatSize(pending.sizeBytes)}) quiere escribir en tu carpeta. Nada se guarda hasta que apruebes.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(onClick = onApprove, modifier = Modifier.weight(1f)) { Text("Aceptar") }
+                OutlinedButton(onClick = onReject, modifier = Modifier.weight(1f)) { Text("Rechazar") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SendOutcomeRow(outcome: SendOutcome) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            imageVector = if (outcome.success) Icons.Default.CheckCircle else Icons.Default.ErrorOutline,
+            contentDescription = null,
+            tint = if (outcome.success) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = if (outcome.success) {
+                if (outcome.count > 1) "${outcome.count} archivos enviados a ${outcome.targetName}"
+                else "«${outcome.fileName}» enviado a ${outcome.targetName}"
+            } else {
+                "No se pudo enviar «${outcome.fileName}»"
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (outcome.success) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+        )
+    }
 }

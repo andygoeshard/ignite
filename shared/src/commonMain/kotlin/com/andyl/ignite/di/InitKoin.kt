@@ -8,8 +8,11 @@ import org.koin.dsl.KoinAppDeclaration
  * through [config].
  */
 fun initKoin(config: KoinAppDeclaration? = null) {
-    startKoin {
-        config?.invoke(this)
-        modules(appModule, platformModule())
+    // Idempotente: si Koin ya está iniciado (Application + MainActivity, o restart del Service) no crashear.
+    runCatching {
+        startKoin {
+            config?.invoke(this)
+            modules(appModule, platformModule())
+        }
     }
 }

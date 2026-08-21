@@ -17,6 +17,7 @@ import org.junit.Test
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.ServerSocket
 import kotlin.test.assertEquals
 
 class UdpDeviceDiscoveryTest {
@@ -25,7 +26,8 @@ class UdpDeviceDiscoveryTest {
     fun discoveryDetectsPeerBeacon() = runBlocking {
         FileKit.init(appId = "com.andyl.ignite.test")
 
-        val discovery = UdpDeviceDiscovery(DeviceInfo())
+        val port = ServerSocket(0).use { it.localPort }
+        val discovery = UdpDeviceDiscovery(DeviceInfo(), port = port)
         discovery.start()
 
         val socket = DatagramSocket()
@@ -35,7 +37,7 @@ class UdpDeviceDiscoveryTest {
         val found = withTimeout(5_000) {
             val awaitPeer = async { discovery.devices.first { it.id == "peer-1" } }
             repeat(15) {
-                socket.send(DatagramPacket(payload, payload.size, InetAddress.getByName("127.0.0.1"), 48432))
+                socket.send(DatagramPacket(payload, payload.size, InetAddress.getByName("127.0.0.1"), port))
                 delay(200)
             }
             awaitPeer.await()
