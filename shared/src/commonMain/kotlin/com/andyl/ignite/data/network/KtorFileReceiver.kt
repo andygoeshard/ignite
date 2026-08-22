@@ -13,8 +13,6 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
-import io.ktor.http.content.PartData
-import io.ktor.http.content.forEachPart
 import io.ktor.server.application.Application
 import io.ktor.server.application.call
 import io.ktor.server.application.install
@@ -23,7 +21,7 @@ import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.plugins.statuspages.exception
 import io.ktor.server.request.header
-import io.ktor.server.request.receiveMultipart
+import io.ktor.server.request.receiveChannel
 import io.ktor.server.request.uri
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
@@ -207,13 +205,8 @@ class KtorFileReceiver(
                 }
 
                 runCatching {
-                    val multipart = call.receiveMultipart()
-                    multipart.forEachPart { part ->
-                        if (part is PartData.FileItem) {
-                            savedFile = receivePart(part, requestedName, peer, totalBytes, offset, expectedSha, transferId)
-                        }
-                        part.dispose()
-                    }
+                    val channel = call.receiveChannel()
+                    savedFile = receiveFile(channel, requestedName, peer, totalBytes, offset, expectedSha, transferId)
                 }.onFailure { error ->
                     val name = savedFile?.name ?: requestedName ?: "archivo"
                     println("[Ignite][RCV] recepción falló '$name': ${error::class.simpleName}: ${error.message}")
@@ -242,13 +235,13 @@ class KtorFileReceiver(
                 if (savedFile != null) {
                     if (expectedSha != null) call.response.header(HEADER_SHA256, expectedSha)
                     call.respond(HttpStatusCode.OK)
-                } else call.respond(HttpStatusCode.BadRequest, "No file part received")
+                } else call.respond(HttpStatusCode.BadRequest, "No file body received")
             }
         }
     }
 
-    private suspend fun receivePart(
-        part: PartData.FileItem,
+    private suspend fun receiveFile(
+        channel: io.ktor.utils.io.ByteReadChannel,
         requestedName: String?,
         peer: String,
         totalBytes: Long,
@@ -256,8 +249,7 @@ class KtorFileReceiver(
         expectedSha256: String?,
         transferId: String,
     ): File {
-        val fileName = part.originalFileName
-            ?: requestedName
+        val fileName = requestedName
             ?: "received_${System.currentTimeMillis()}"
         // For resumption we must use deterministic target, not uniqueTarget with (1)
         val baseTarget = File(storage.receiveDir(), fileName)
@@ -293,9 +285,8 @@ class KtorFileReceiver(
         println("[Ignite][RCV] recibiendo '$fileName' → ${target.absolutePath} (offset=$offset total=${totalBytes / 1024 / 1024}MB)")
         val t0 = System.currentTimeMillis()
 
-        var lastEmitted = record.progress
-        val channel = part.provider()
         var received = offset
+        var lastEmitted = record.progress
         var lastLoggedPct = if (totalBytes > 0) ((received * 100) / totalBytes).toInt() else 0
         val digest = if (expectedSha256 != null) MessageDigest.getInstance("SHA-256") else null
         // If resuming, we need to feed existing bytes into digest if SHA will be verified over whole file.

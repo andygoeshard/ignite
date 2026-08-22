@@ -15,6 +15,7 @@ import com.andyl.ignite.domain.TransferRepository
 import com.andyl.ignite.domain.model.Device
 import com.andyl.ignite.presentation.home.HomeViewModel
 import com.andyl.ignite.presentation.home.HomeEvent
+import com.andyl.ignite.presentation.home.IncomingUi
 import com.andyl.ignite.presentation.home.PendingFile
 import androidx.lifecycle.viewModelScope
 import io.github.vinceglb.filekit.FileKit
@@ -84,8 +85,10 @@ class HomeViewModelTest {
         testDispatcher.scheduler.runCurrent()
         kotlinx.coroutines.delay(10)
         testDispatcher.scheduler.runCurrent()
-        assertTrue(vm.state.value.pendingApproval?.fileName == "foto.jpg")
-        assertEquals("id-1", vm.state.value.pendingApproval?.transferId)
+        val approval = vm.state.value.incoming
+        assertTrue(approval is IncomingUi.AwaitingApproval, "expected AwaitingApproval but was $approval")
+        assertEquals("foto.jpg", approval.fileName)
+        assertEquals("id-1", approval.transferId)
         vm.viewModelScope.cancel()
     }
 

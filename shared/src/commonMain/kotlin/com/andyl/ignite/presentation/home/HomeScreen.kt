@@ -1,11 +1,20 @@
 package com.andyl.ignite.presentation.home
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -22,10 +31,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -44,15 +55,32 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.andyl.ignite.domain.model.Device
+import com.andyl.ignite.presentation.format.formatSize
 import kotlin.math.min
 
 @Composable
@@ -61,6 +89,7 @@ fun HomeRoute(
     onEvent: (HomeEvent) -> Unit,
     onPickFile: () -> Unit,
     modifier: Modifier = Modifier,
+    onNavigateToHistory: () -> Unit = {},
 ) {
     DroppableArea(onFiles = { files ->
         files.forEach { onEvent(HomeEvent.OnFileSelected(it)) }
@@ -70,6 +99,7 @@ fun HomeRoute(
             onEvent = onEvent,
             onPickFile = onPickFile,
             modifier = modifier,
+            onNavigateToHistory = onNavigateToHistory,
         )
     }
 }
@@ -80,9 +110,14 @@ fun HomeScreen(
     onEvent: (HomeEvent) -> Unit,
     onPickFile: () -> Unit,
     modifier: Modifier = Modifier,
+    onNavigateToHistory: () -> Unit = {},
 ) {
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
-        val isWide = maxWidth > 720.dp
+        val compact = maxWidth < 720.dp
+        val expanded = maxWidth >= 1200.dp
+        // #30: una sola lectura por composición; desactiva spins/pulsos/slides
+        val reduceMotion = remember { com.andyl.ignite.data.isReduceMotionEnabled() }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -90,111 +125,151 @@ fun HomeScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-        Header(
-            deviceName = state.deviceName,
-            localIp = state.localIp,
-            note = state.note,
-            onRefresh = { onEvent(HomeEvent.OnRefresh) },
-        )
-
-            PinCard(
-                myPin = state.myPin,
-                onRegenerate = { onEvent(HomeEvent.OnRegeneratePin) },
-                onToggleDialog = { onEvent(HomeEvent.OnTogglePinDialog) },
+            Header(
+                deviceName = state.deviceName,
+                localIp = state.localIp,
+                isScanning = state.isScanning,
+                reduceMotion = reduceMotion,
+                onRefresh = { onEvent(HomeEvent.OnRefresh) },
             )
 
-            // Dialog de aprobación que bloquea hasta decidir (antes de escribir a disco)
-            state.pendingApproval?.let { pending ->
-                ApprovalCard(
-                    pending = pending,
+            if (state.interrupted.isNotEmpty()) {
+                InterruptedBanner(
+                    interrupted = state.interrupted,
+                    onDismiss = { onEvent(HomeEvent.OnDismissInterrupted) },
+                    onOpenHistory = onNavigateToHistory,
+                )
+            }
+
+            // Recepción unificada (#7): la aprobación queda siempre arriba y visible
+            state.incoming?.let { incoming ->
+                IncomingCard(
+                    incoming = incoming,
                     onApprove = { onEvent(HomeEvent.OnApproveIncoming) },
                     onReject = { onEvent(HomeEvent.OnRejectIncoming) },
+                    onDismiss = { onEvent(HomeEvent.OnDismissIncoming) },
                 )
             }
 
-            if (isWide) {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-                    Box(Modifier.weight(1f)) {
-                        RadarCard(
-                            devices = state.devices,
-                            selected = state.selectedDevice,
-                            isScanning = state.isScanning,
-                            onSelect = { onEvent(HomeEvent.OnDeviceSelected(it)) },
-                        )
-                    }
-                    Box(Modifier.weight(1f)) {
-                        ManualConnectCard(
-                            manualIp = state.manualIp,
-                            onIpChanged = { onEvent(HomeEvent.OnManualIpChanged(it)) },
-                            onConnect = { onEvent(HomeEvent.OnManualConnect) },
-                        )
-                    }
-                }
-            } else {
-                RadarCard(
-                    devices = state.devices,
-                    selected = state.selectedDevice,
-                    isScanning = state.isScanning,
-                    onSelect = { onEvent(HomeEvent.OnDeviceSelected(it)) },
-                )
-                ManualConnectCard(
-                    manualIp = state.manualIp,
-                    onIpChanged = { onEvent(HomeEvent.OnManualIpChanged(it)) },
-                    onConnect = { onEvent(HomeEvent.OnManualConnect) },
-                )
-            }
-
-            // PIN del receptor (requerido para enviar)
-            if (state.selectedDevice != null) {
-                OutlinedTextField(
-                    value = state.targetPin,
-                    onValueChange = { onEvent(HomeEvent.OnTargetPinChanged(it)) },
-                    label = { Text("PIN del receptor (6 dígitos)") },
-                    placeholder = { Text("Ej: ${state.myPin}") },
-                    singleLine = true,
+            when {
+                // Expandido (≥1200dp): dispositivos | envío | recibidos
+                expanded -> Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.fillMaxWidth(),
-                )
-                if (state.targetPin.isNotEmpty() && state.targetPin.length != 6) {
-                    Text(
-                        "El PIN debe ser de 6 dígitos",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error,
+                ) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        PinCard(
+                            myPin = state.myPin,
+                            onRegenerate = { onEvent(HomeEvent.OnRegeneratePin) },
+                            onToggleDialog = { onEvent(HomeEvent.OnTogglePinDialog) },
+                        )
+                        DevicesSection(state, onEvent, focusManualIp = true, reduceMotion = reduceMotion)
+                    }
+                    SendSection(state, onEvent, onPickFile, Modifier.weight(1f), reduceMotion)
+                    ReceiveSection(state, onEvent, Modifier.weight(1f))
+                }
+
+                // Mediano (720–1199dp): dos columnas
+                !compact -> Row(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        PinCard(
+                            myPin = state.myPin,
+                            onRegenerate = { onEvent(HomeEvent.OnRegeneratePin) },
+                            onToggleDialog = { onEvent(HomeEvent.OnTogglePinDialog) },
+                        )
+                        DevicesSection(state, onEvent, focusManualIp = true, reduceMotion = reduceMotion)
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        SendSection(state, onEvent, onPickFile, Modifier.fillMaxWidth(), reduceMotion)
+                        ReceiveSection(state, onEvent, Modifier.fillMaxWidth())
+                    }
+                }
+
+                // Compacto (<720dp): una sola columna
+                else -> {
+                    PinCard(
+                        myPin = state.myPin,
+                        onRegenerate = { onEvent(HomeEvent.OnRegeneratePin) },
+                        onToggleDialog = { onEvent(HomeEvent.OnTogglePinDialog) },
                     )
+                    DevicesSection(state, onEvent, Modifier.fillMaxWidth(), reduceMotion = reduceMotion)
+                    SendSection(state, onEvent, onPickFile, Modifier.fillMaxWidth(), reduceMotion)
+                    ReceiveSection(state, onEvent, Modifier.fillMaxWidth())
                 }
             }
+        }
+    }
+}
 
-            if (state.pendingFiles.isNotEmpty()) {
-                FileQueue(
-                    files = state.pendingFiles,
-                    onClear = { onEvent(HomeEvent.OnFileCleared(it)) },
+@Composable
+private fun DevicesSection(
+    state: HomeState,
+    onEvent: (HomeEvent) -> Unit,
+    modifier: Modifier = Modifier,
+    focusManualIp: Boolean = false,
+    reduceMotion: Boolean = false,
+) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        RadarCard(
+            devices = state.devices,
+            selected = state.selectedDevice,
+            isScanning = state.isScanning,
+            error = state.error,
+            reduceMotion = reduceMotion,
+            onSelect = { onEvent(HomeEvent.OnDeviceSelected(it)) },
+            onRetry = { onEvent(HomeEvent.OnRefresh) },
+        )
+        ManualConnectCard(
+            manualIp = state.manualIp,
+            onIpChanged = { onEvent(HomeEvent.OnManualIpChanged(it)) },
+            onConnect = { onEvent(HomeEvent.OnManualConnect) },
+            requestFocus = focusManualIp,
+        )
+    }
+}
+
+@Composable
+private fun SendSection(
+    state: HomeState,
+    onEvent: (HomeEvent) -> Unit,
+    onPickFile: () -> Unit,
+    modifier: Modifier = Modifier,
+    reduceMotion: Boolean = false,
+) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        if (state.selectedDevice != null) {
+            OutlinedTextField(
+                value = state.targetPin,
+                onValueChange = { onEvent(HomeEvent.OnTargetPinChanged(it)) },
+                label = { Text("PIN del receptor (6 dígitos)") },
+                placeholder = { Text("Ej: ${state.myPin}") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (state.targetPin.isNotEmpty() && state.targetPin.length != 6) {
+                Text(
+                    "El PIN debe ser de 6 dígitos",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
                 )
             }
+        }
 
-        AnimatedVisibility(
-            visible = state.recentReceived.isNotEmpty(),
-            enter = fadeIn() + expandVertically(),
-        ) {
-            RecentReceivedCard(
-                files = state.recentReceived,
-                onOpenFolder = { onEvent(HomeEvent.OnOpenReceivedFolder(it)) },
+        if (state.pendingFiles.isNotEmpty()) {
+            FileQueue(
+                files = state.pendingFiles,
+                onClear = { onEvent(HomeEvent.OnFileCleared(it)) },
             )
         }
 
-        if (state.isSending || state.activeFileName != null) {
-            ProgressCard(
-                fileName = state.activeFileName.orEmpty(),
-                progress = state.progress,
-                totalBytes = state.pendingFiles.sumOf { it.sizeBytes },
-            )
-        } else {
-            state.sendOutcome?.let { outcome ->
-                SendOutcomeRow(outcome)
-            }
-        }
+        SessionArea(state, onEvent, reduceMotion = reduceMotion)
 
         OutlinedButton(
             onClick = onPickFile,
-            enabled = !state.isSending,
+            enabled = !state.isSendActive,
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text(if (state.pendingFiles.isEmpty()) "Seleccionar archivo" else "Agregar otro archivo")
@@ -207,7 +282,9 @@ fun HomeScreen(
         ) {
             Text(
                 when {
-                    state.isSending -> "Enviando…"
+                    state.sendSession is SendSession.Preparing -> "Preparando…"
+                    state.sendSession is SendSession.Cancelling -> "Cancelando…"
+                    state.sendSession is SendSession.Sending -> "Enviando…"
                     state.selectedDevice == null -> "Elegí un dispositivo de la lista"
                     state.pendingFiles.isEmpty() -> "Seleccioná un archivo para enviar"
                     state.targetPin.length != 6 -> "Ingresá el PIN de 6 dígitos"
@@ -215,12 +292,99 @@ fun HomeScreen(
                 },
             )
         }
+    }
+}
+
+@Composable
+private fun ReceiveSection(
+    state: HomeState,
+    onEvent: (HomeEvent) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    AnimatedVisibility(
+        visible = state.recentReceived.isNotEmpty(),
+        enter = fadeIn() + expandVertically(),
+        modifier = modifier,
+    ) {
+        RecentReceivedCard(
+            files = state.recentReceived,
+            onOpenFolder = { onEvent(HomeEvent.OnOpenReceivedFolder(it)) },
+        )
+    }
+}
+
+/**
+ * Zona de estado del envío (#24): anima transiciones entre fases sin
+ * animar cada tick de progreso (la clave es la fase, no la sesión).
+ */
+@Composable
+private fun SessionArea(
+    state: HomeState,
+    onEvent: (HomeEvent) -> Unit,
+    modifier: Modifier = Modifier,
+    reduceMotion: Boolean = false,
+) {
+    val phase = when (val s = state.sendSession) {
+        is SendSession.Preparing -> 1
+        is SendSession.Sending -> 2
+        is SendSession.Cancelling -> 3
+        SendSession.Idle -> if (state.sendOutcome != null) 4 else 0
+    }
+    AnimatedContent(
+        targetState = phase,
+        transitionSpec = {
+            // #30: con movimiento reducido, sólo fade
+            if (reduceMotion) {
+                fadeIn(tween(150)) togetherWith fadeOut(tween(90))
+            } else {
+                (fadeIn(tween(150)) + slideInVertically(tween(150)) { it / 8 }) togetherWith fadeOut(tween(90))
+            }
+        },
+        label = "send-session",
+        modifier = modifier,
+    ) { _ ->
+        when (val session = state.sendSession) {
+            is SendSession.Sending -> ProgressCard(
+                session = session,
+                isCancelling = false,
+                onCancel = { onEvent(HomeEvent.OnCancelSend) },
+            )
+            is SendSession.Cancelling -> ProgressCard(
+                session = session.of,
+                isCancelling = true,
+                onCancel = { },
+            )
+            is SendSession.Preparing -> ProgressCard(
+                session = SendSession.Sending(
+                    targetName = session.targetName,
+                    fileIndex = 0,
+                    fileCount = session.fileCount,
+                    fileName = "",
+                    fileProgress = 0f,
+                    fileSentBytes = 0L,
+                    fileTotalBytes = 0L,
+                    completedBytesBeforeCurrent = 0L,
+                    totalBytes = session.totalBytes,
+                ),
+                isCancelling = false,
+                onCancel = { onEvent(HomeEvent.OnCancelSend) },
+                titleOverride = "Preparando envío a ${session.targetName}…",
+            )
+            SendSession.Idle -> state.sendOutcome?.let { outcome ->
+                SendOutcomeRow(outcome)
+            }
         }
     }
 }
 
 @Composable
-private fun Header(deviceName: String, localIp: String, note: String?, onRefresh: () -> Unit) {
+private fun Header(
+    deviceName: String,
+    localIp: String,
+    isScanning: Boolean,
+    reduceMotion: Boolean,
+    onRefresh: () -> Unit,
+) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -232,7 +396,19 @@ private fun Header(deviceName: String, localIp: String, note: String?, onRefresh
                 modifier = Modifier.weight(1f),
             )
             IconButton(onClick = onRefresh) {
-                Icon(Icons.Default.Refresh, contentDescription = "Buscar de nuevo")
+                val spin = rememberInfiniteTransition(label = "refresh-spin")
+                val angle by spin.animateFloat(
+                    initialValue = 0f,
+                    targetValue = 360f,
+                    animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)),
+                    label = "refresh-angle",
+                )
+                // #30: sin movimiento reducido, gira mientras escanea; si no, estático
+                Icon(
+                    Icons.Default.Refresh,
+                    contentDescription = "Buscar de nuevo",
+                    modifier = Modifier.rotate(if (isScanning && !reduceMotion) angle else 0f),
+                )
             }
         }
         if (deviceName.isNotBlank()) {
@@ -246,16 +422,9 @@ private fun Header(deviceName: String, localIp: String, note: String?, onRefresh
             Text(
                 text = "Tu IP local: $localIp — el otro debe estar en la misma (192.168.x)",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.tertiary,
+                // WCAG AA (#Fase 3): texto pequeño en onSurfaceVariant, no terciario
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp),
-            )
-        }
-        AnimatedVisibility(visible = !note.isNullOrBlank(), enter = fadeIn() + expandVertically()) {
-            Text(
-                text = note.orEmpty(),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(top = 4.dp),
             )
         }
     }
@@ -266,7 +435,10 @@ private fun RadarCard(
     devices: List<Device>,
     selected: Device?,
     isScanning: Boolean,
+    error: String?,
+    reduceMotion: Boolean,
     onSelect: (Device) -> Unit,
+    onRetry: () -> Unit,
 ) {
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -287,25 +459,10 @@ private fun RadarCard(
             }
             Spacer(Modifier.height(12.dp))
 
-            RadarGraph(devices)
+            RadarGraph(devices, pulse = isScanning && !reduceMotion)
 
-            if (devices.isEmpty()) {
-                Text(
-                    text = if (isScanning) "Buscando dispositivos en la red local…"
-                    else "No hay dispositivos. Tocá ↻ para buscar de nuevo.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 12.dp),
-                )
-                if (isScanning) {
-                    Text(
-                        text = "Tip: ambos dispositivos tienen que estar en la misma red Wi-Fi y con la app abierta.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
-                }
-            } else {
+            // Contrato tri-state (#32): LOADING / EMPTY / ERROR con acción
+            if (devices.isNotEmpty()) {
                 // heightIn hace que sea responsive y no corte en pantallas chicas dentro de un scroll padre
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -319,6 +476,40 @@ private fun RadarCard(
                         )
                     }
                 }
+            } else {
+                Column(modifier = Modifier.padding(top = 12.dp)) {
+                    when {
+                        error != null -> {
+                            Text(
+                                text = "No se pudo buscar dispositivos: $error",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                            TextButton(onClick = onRetry) { Text("Reintentar") }
+                        }
+                        isScanning -> {
+                            Text(
+                                text = "Buscando dispositivos en la red local…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                text = "Tip: ambos dispositivos tienen que estar en la misma red Wi-Fi y con la app abierta.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+                        }
+                        else -> {
+                            Text(
+                                text = "No hay dispositivos. Tocá ↻ para buscar de nuevo.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            TextButton(onClick = onRetry) { Text("Buscar de nuevo") }
+                        }
+                    }
+                }
             }
         }
     }
@@ -328,6 +519,7 @@ private fun RadarCard(
 private fun DeviceRow(device: Device, isSelected: Boolean, onClick: () -> Unit) {
     val border = if (isSelected) MaterialTheme.colorScheme.primary
     else MaterialTheme.colorScheme.outlineVariant
+    val haptic = LocalHapticFeedback.current
 
     Surface(
         shape = RoundedCornerShape(12.dp),
@@ -336,7 +528,13 @@ private fun DeviceRow(device: Device, isSelected: Boolean, onClick: () -> Unit) 
         border = androidx.compose.foundation.BorderStroke(1.dp, border),
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
+            .selectable(
+                selected = isSelected,
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress) // #31
+                    onClick()
+                },
+            ),
     ) {
         Row(
             modifier = Modifier.padding(12.dp),
@@ -366,13 +564,28 @@ private fun DeviceRow(device: Device, isSelected: Boolean, onClick: () -> Unit) 
 }
 
 @Composable
-private fun RadarGraph(devices: List<Device>) {
+private fun RadarGraph(devices: List<Device>, pulse: Boolean = false) {
     val primary = MaterialTheme.colorScheme.primary
     val tertiary = MaterialTheme.colorScheme.tertiary
+    // #30: pulso sutil sólo mientras escanea y si el sistema no pidió reducir movimiento
+    val pulseAlpha by rememberInfiniteTransition(label = "radar-pulse").animateFloat(
+        initialValue = 0.12f,
+        targetValue = 0.32f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1400, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "radar-pulse-alpha",
+    )
+    val ringAlpha = if (pulse) pulseAlpha else 0.2f
+    // #29: el radar es decorativo; la info real vive en el título y la lista
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(120.dp),
+            .height(120.dp)
+            .semantics {
+                contentDescription = "Radar: ${devices.size} ${if (devices.size == 1) "dispositivo" else "dispositivos"} detectado${if (devices.size == 1) "" else "s"}"
+            },
         contentAlignment = Alignment.Center,
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
@@ -380,7 +593,7 @@ private fun RadarGraph(devices: List<Device>) {
             val center = Offset(size.width / 2, size.height / 2)
             val maxR = sizePx / 2f
 
-            val ringColor = primary.copy(alpha = 0.2f)
+            val ringColor = primary.copy(alpha = ringAlpha)
             for (i in 1..3) {
                 drawCircle(
                     color = ringColor,
@@ -532,7 +745,12 @@ private fun RecentReceivedCard(
 }
 
 @Composable
-private fun ProgressCard(fileName: String, progress: Float, totalBytes: Long) {
+private fun ProgressCard(
+    session: SendSession.Sending,
+    isCancelling: Boolean,
+    onCancel: () -> Unit,
+    titleOverride: String? = null,
+) {
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.primaryContainer,
@@ -540,26 +758,59 @@ private fun ProgressCard(fileName: String, progress: Float, totalBytes: Long) {
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
-                text = "Enviando a… $fileName",
+                text = titleOverride ?: if (session.fileCount > 1) {
+                    "Enviando archivo ${session.fileIndex + 1} de ${session.fileCount} a ${session.targetName}"
+                } else {
+                    "Enviando «${session.fileName}» a ${session.targetName}"
+                },
                 style = MaterialTheme.typography.titleSmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.height(8.dp))
-            LinearProgressIndicator(
-                progress = { progress.coerceIn(0f, 1f) },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(4.dp))
-            val detail = if (totalBytes > 0) {
-                "${formatSize((totalBytes * progress).toLong())} de ${formatSize(totalBytes)}"
+            val preparing = session.fileTotalBytes <= 0L
+            if (preparing) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             } else {
-                "${(progress * 100).toInt()}%"
+                if (session.fileCount > 1) {
+                    Text(
+                        text = "${session.fileName} · ${formatSize(session.fileSentBytes)} de ${formatSize(session.fileTotalBytes)} · ${(session.fileProgress * 100).toInt()}%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                } else {
+                    Text(
+                        text = "${formatSize(session.fileSentBytes)} de ${formatSize(session.fileTotalBytes)}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                Spacer(Modifier.height(2.dp))
+                LinearProgressIndicator(
+                    progress = { session.fileProgress.coerceIn(0f, 1f) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (session.fileCount > 1) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = "Total: ${formatSize(session.globalSentBytes)} de ${formatSize(session.totalBytes)} · ${(session.globalProgress * 100).toInt()}%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    LinearProgressIndicator(
+                        progress = { session.globalProgress.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
-            Text(
-                text = detail,
-                style = MaterialTheme.typography.bodySmall,
-            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = onCancel,
+                enabled = !isCancelling,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(if (isCancelling) "Cancelando…" else "Cancelar")
+            }
         }
     }
 }
@@ -580,7 +831,7 @@ private fun PinCard(myPin: String, onRegenerate: () -> Unit, onToggleDialog: () 
                 Text(
                     myPin.ifBlank { "------" },
                     style = MaterialTheme.typography.headlineMedium,
-                    letterSpacing = androidx.compose.ui.unit.TextUnit(8f, androidx.compose.ui.unit.TextUnitType.Sp),
+                    letterSpacing = 8.sp,
                 )
                 Text(
                     "Compartí este código con quien te envía. Valida el header X-Ignite-Pin.",
@@ -596,7 +847,16 @@ private fun PinCard(myPin: String, onRegenerate: () -> Unit, onToggleDialog: () 
 }
 
 @Composable
-private fun ManualConnectCard(manualIp: String, onIpChanged: (String) -> Unit, onConnect: () -> Unit) {
+private fun ManualConnectCard(
+    manualIp: String,
+    onIpChanged: (String) -> Unit,
+    onConnect: () -> Unit,
+    requestFocus: Boolean = false,
+) {
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        if (requestFocus) runCatching { focusRequester.requestFocus() }
+    }
     Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -616,7 +876,17 @@ private fun ManualConnectCard(manualIp: String, onIpChanged: (String) -> Unit, o
                     label = { Text("IP del otro") },
                     placeholder = { Text("192.168.1.10") },
                     singleLine = true,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(focusRequester)
+                        .onPreviewKeyEvent { e ->
+                            if ((e.key == Key.Enter || e.key == Key.NumPadEnter) && e.type == KeyEventType.KeyUp && manualIp.isNotBlank()) {
+                                onConnect()
+                                true
+                            } else {
+                                false
+                            }
+                        },
                 )
                 Button(onClick = onConnect, enabled = manualIp.isNotBlank()) { Text("Conectar") }
             }
@@ -624,25 +894,89 @@ private fun ManualConnectCard(manualIp: String, onIpChanged: (String) -> Unit, o
     }
 }
 
+/**
+ * Tarjeta única de recepción (#7): fase de aprobación explícita (nada se
+ * escribe hasta aceptar) y fase de progreso no modal, descartable.
+ */
 @Composable
-private fun ApprovalCard(pending: PendingApprovalUi, onApprove: () -> Unit, onReject: () -> Unit) {
+private fun IncomingCard(
+    incoming: IncomingUi,
+    onApprove: () -> Unit,
+    onReject: () -> Unit,
+    onDismiss: () -> Unit,
+) {
     Surface(
         shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.errorContainer,
+        color = when (incoming) {
+            is IncomingUi.AwaitingApproval -> MaterialTheme.colorScheme.errorContainer
+            is IncomingUi.Receiving -> MaterialTheme.colorScheme.secondaryContainer
+        },
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text("¿Aceptar archivo?", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onErrorContainer)
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "«${pending.fileName}» de ${pending.peerName} (${formatSize(pending.sizeBytes)}) quiere escribir en tu carpeta. Nada se guarda hasta que apruebes.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onErrorContainer,
-            )
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                Button(onClick = onApprove, modifier = Modifier.weight(1f)) { Text("Aceptar") }
-                OutlinedButton(onClick = onReject, modifier = Modifier.weight(1f)) { Text("Rechazar") }
+            when (incoming) {
+                is IncomingUi.AwaitingApproval -> {
+                    Text(
+                        "¿Aceptar archivo?",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "«${incoming.fileName}» de ${incoming.peerName} (${formatSize(incoming.sizeBytes)}) quiere escribir en tu carpeta. Nada se guarda hasta que apruebes.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    val haptic = LocalHapticFeedback.current
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Button(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress) // #31
+                                onApprove()
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("Aceptar") }
+                        OutlinedButton(
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onReject()
+                            },
+                            modifier = Modifier.weight(1f),
+                        ) { Text("Rechazar") }
+                    }
+                }
+
+                is IncomingUi.Receiving -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Recibiendo «${incoming.fileName}»",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        IconButton(onClick = onDismiss) {
+                            Icon(
+                                Icons.Default.Close,
+                                contentDescription = "Ocultar progreso",
+                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "De ${incoming.peerName} · ${formatSize(incoming.receivedBytes)} de ${formatSize(incoming.sizeBytes)} · ${(incoming.progress * 100).toInt()}%",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    LinearProgressIndicator(
+                        progress = { incoming.progress.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
         }
     }
@@ -650,23 +984,79 @@ private fun ApprovalCard(pending: PendingApprovalUi, onApprove: () -> Unit, onRe
 
 @Composable
 private fun SendOutcomeRow(outcome: SendOutcome) {
+    val successColor = MaterialTheme.colorScheme.primary
+    val haptic = LocalHapticFeedback.current
+    LaunchedEffect(outcome) {
+        if (!outcome.cancelled) haptic.performHapticFeedback(HapticFeedbackType.LongPress) // #31
+    }
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(
             imageVector = if (outcome.success) Icons.Default.CheckCircle else Icons.Default.ErrorOutline,
             contentDescription = null,
-            tint = if (outcome.success) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+            tint = if (outcome.success) successColor else MaterialTheme.colorScheme.error,
             modifier = Modifier.size(20.dp),
         )
         Spacer(Modifier.width(8.dp))
-        Text(
-            text = if (outcome.success) {
-                if (outcome.count > 1) "${outcome.count} archivos enviados a ${outcome.targetName}"
-                else "«${outcome.fileName}» enviado a ${outcome.targetName}"
+        Column {
+            Text(
+                text = when {
+                    outcome.cancelled -> "Envío cancelado — los archivos siguen en la cola"
+                    outcome.success && outcome.count > 1 -> "${outcome.count} archivos enviados a ${outcome.targetName}"
+                    outcome.success -> "«${outcome.fileName}» enviado a ${outcome.targetName}"
+                    else -> "No se pudo enviar «${outcome.fileName}»"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (outcome.success) successColor else MaterialTheme.colorScheme.error,
+            )
+            if (!outcome.success && !outcome.cancelled && outcome.error != null) {
+                Text(
+                    text = outcome.error.userMessage(outcome.targetName),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/** #27: aviso de transferencias que quedaron a mitad cuando se cerró la app. */
+@Composable
+private fun InterruptedBanner(
+    interrupted: List<InterruptedTransferUi>,
+    onDismiss: () -> Unit,
+    onOpenHistory: () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.errorContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(start = 16.dp, top = 16.dp, end = 16.dp)) {
+            Text(
+                text = if (interrupted.size == 1) {
+                    "Una transferencia quedó interrumpida"
+                } else {
+                    "${interrupted.size} transferencias quedaron interrumpidas"
+                },
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Spacer(Modifier.height(4.dp))
+            val first = interrupted.first()
+            val detail = if (interrupted.size == 1) {
+                first
             } else {
-                "No se pudo enviar «${outcome.fileName}»"
-            },
-            style = MaterialTheme.typography.bodyMedium,
-            color = if (outcome.success) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
-        )
+                first.copy(fileName = "${first.fileName} y ${interrupted.size - 1} más")
+            }
+            Text(
+                text = "«${detail.fileName}» con ${detail.peerName} · ${formatSize(detail.sizeBytes)} · ${formatSize((detail.sizeBytes * detail.progress).toLong())} transferidos",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = onDismiss) { Text("Descartar") }
+                TextButton(onClick = onOpenHistory) { Text("Ver en historial") }
+            }
+        }
     }
 }

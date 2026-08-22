@@ -3,24 +3,21 @@ package com.andyl.ignite.data.network
 import com.andyl.ignite.domain.FileSender
 import com.andyl.ignite.domain.model.Device
 import io.ktor.client.HttpClient
-import io.ktor.client.request.forms.ChannelProvider
-import io.ktor.client.request.forms.formData
-import io.ktor.client.request.forms.submitFormWithBinaryData
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
-import io.ktor.http.Headers
+import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
-import io.ktor.http.parameters
-import io.ktor.utils.io.ByteChannel
+import io.ktor.http.content.OutgoingContent
+import io.ktor.utils.io.ByteWriteChannel
 import io.ktor.utils.io.writeFully
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -107,10 +104,12 @@ class KtorFileSender(
         // Report initial progress if resuming
         if (offset > 0) trySend((offset.toFloat() / sizeBytes).coerceIn(0f, 1f))
 
-        val provider = ChannelProvider(size = remaining) {
-            val channel = ByteChannel()
-            // launch producer
-            launch(Dispatchers.IO) {
+        // Cuerpo binario crudo (sin multipart): sin límites de parser ni overhead de boundaries.
+        // Los metadatos viajan por headers (fileName, sha256, offset, total bytes).
+        val body = object : OutgoingContent.WriteChannelContent() {
+            override val contentLength: Long = remaining
+
+            override suspend fun writeTo(channel: ByteWriteChannel) {
                 try {
                     BufferedInputStream(FileInputStream(localPath), chunkSize).use { input ->
                         if (offset > 0) {
@@ -137,29 +136,21 @@ class KtorFileSender(
                         }
                     }
                     println("[Ignite][SND] archivo leído completo: $sent bytes en ${System.currentTimeMillis() - t0}ms")
-                    channel.close()
                 } catch (e: Exception) {
                     println("[Ignite][SND] productor cortado a los $sent bytes: ${e::class.simpleName}: ${e.message}")
-                    channel.cancel(e)
+                    throw e
                 }
             }
-            channel
         }
 
-        val response: HttpResponse = client.submitFormWithBinaryData(
-            url = "http://${target.host}:${target.port}/upload",
-            formData = formData {
-                append("file", provider, Headers.build {
-                    append(HttpHeaders.ContentType, "application/octet-stream")
-                    append(HttpHeaders.ContentDisposition, "filename=\"$fileName\"")
-                })
-            },
-        ) {
+        val response: HttpResponse = client.post("http://${target.host}:${target.port}/upload") {
             url.parameters.append("fileName", fileName)
+            header(HttpHeaders.ContentType, ContentType.Application.OctetStream.toString())
             if (sha256 != null) header(HEADER_SHA256, sha256)
             if (pin != null) header(HEADER_PIN, pin)
             if (offset > 0) header(HEADER_OFFSET, offset.toString())
             header(HEADER_TOTAL_BYTES, sizeBytes.toString())
+            setBody(body)
         }
 
         println("[Ignite][SND] respuesta: ${response.status} en ${System.currentTimeMillis() - t0}ms (${sent / 1024 / 1024}MB enviados)")

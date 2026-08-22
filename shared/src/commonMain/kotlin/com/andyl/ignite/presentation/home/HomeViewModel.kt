@@ -14,12 +14,17 @@ import com.andyl.ignite.domain.TransferNotifier
 import com.andyl.ignite.domain.TransferRepository
 import com.andyl.ignite.domain.model.Device
 import com.andyl.ignite.domain.model.Transfer
+import com.andyl.ignite.domain.model.TransferError
 import com.andyl.ignite.presentation.MviViewModel
+import io.ktor.client.request.get
+import io.ktor.client.statement.bodyAsText
 import kotlinx.coroutines.Job
+import kotlinx.serialization.json.Json
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
@@ -35,14 +40,15 @@ class HomeViewModel(
     private val storage: AppStorage,
     private val notifier: TransferNotifier,
     private val pairingManager: PairingManager,
+    private val httpClient: io.ktor.client.HttpClient? = null,
     private val enablePrune: Boolean = true,
 ) : MviViewModel<HomeEvent, HomeState, HomeEffect>() {
 
     private val _devices = MutableStateFlow<List<Device>>(emptyList())
     private val lastSeenByDevice = mutableMapOf<String, Long>()
     private val startedAt = System.currentTimeMillis()
+    private val json = Json { ignoreUnknownKeys = true }
     private var sendJob: Job? = null
-    private var noteJob: Job? = null
     private var outcomeJob: Job? = null
 
     override fun initialState(): HomeState = HomeState(
@@ -90,6 +96,33 @@ class HomeViewModel(
         collectDevices()
         if (enablePrune) pruneStaleDevices()
         collectIncomingEvents()
+        recoverInterrupted()
+    }
+
+    /**
+     * #27: al arrancar, las transferencias que quedaron IN_PROGRESS de una
+     * sesión anterior se marcan INTERRUPTED y se avisan en la UI. El protocolo
+     * permite reanudar por offset, pero no persistimos la ruta de origen, así
+     * que v1 sólo informa y deja el registro visible en historial.
+     */
+    private fun recoverInterrupted() {
+        viewModelScope.launch {
+            runCatching {
+                val stale = repository.observeTransfers().first()
+                    .filter { it.status == Transfer.Status.IN_PROGRESS }
+                stale.forEach { repository.upsert(it.copy(status = Transfer.Status.INTERRUPTED)) }
+                if (stale.isNotEmpty()) {
+                    println("[Ignite][VM] ${stale.size} transferencias interrumpidas de la sesión anterior")
+                    updateState { s ->
+                        s.copy(
+                            interrupted = stale.map {
+                                InterruptedTransferUi(it.fileName, it.peerName, it.sizeBytes, it.progress)
+                            },
+                        )
+                    }
+                }
+            }.onFailure { println("[Ignite][VM] sweep de interrumpidas falló: ${it.message}") }
+        }
     }
 
     private fun startInfrastructure() {
@@ -147,18 +180,39 @@ class HomeViewModel(
         receiver.incomingEvents
             .onEach { event ->
                 when (event) {
+                    is IncomingEvent.AwaitingApproval -> {
+                        updateState { state ->
+                            state.copy(
+                                incoming = IncomingUi.AwaitingApproval(
+                                    fileName = event.fileName,
+                                    peerName = peerName(event.peerHost),
+                                    sizeBytes = event.totalBytes,
+                                    transferId = event.transferId,
+                                ),
+                            )
+                        }
+                        showNote("«${event.fileName}» de ${peerName(event.peerHost)} quiere enviarte un archivo")
+                    }
+
                     is IncomingEvent.Started -> {
                         updateState { state ->
-                            state.copy(incoming = IncomingFileUi(fileName = event.fileName, peerName = peerName(event.peerHost), sizeBytes = event.totalBytes))
+                            state.copy(
+                                incoming = IncomingUi.Receiving(
+                                    fileName = event.fileName,
+                                    peerName = peerName(event.peerHost),
+                                    sizeBytes = event.totalBytes,
+                                ),
+                            )
                         }
                         runCatching { notifier.onReceiving(event.fileName, 0, event.totalBytes, 0f) }
                     }
 
                     is IncomingEvent.Progress -> {
                         updateState { state ->
-                            if (state.incoming?.fileName == event.fileName) {
+                            val current = state.incoming
+                            if (current is IncomingUi.Receiving && current.fileName == event.fileName) {
                                 state.copy(
-                                    incoming = state.incoming?.copy(
+                                    incoming = current.copy(
                                         receivedBytes = event.receivedBytes,
                                         sizeBytes = event.totalBytes,
                                         progress = event.progress,
@@ -175,7 +229,6 @@ class HomeViewModel(
                         updateState { state ->
                             state.copy(
                                 incoming = null,
-                                pendingApproval = null,
                                 recentReceived = (
                                     listOf(ReceivedFileUi(event.fileName, event.path, event.sizeBytes)) +
                                         state.recentReceived
@@ -186,22 +239,9 @@ class HomeViewModel(
                     }
 
                     is IncomingEvent.Failed -> {
-                        updateState { state -> state.copy(incoming = null, pendingApproval = null) }
-                        showNote("No se pudo recibir «${event.fileName}»")
+                        updateState { state -> state.copy(incoming = null) }
+                        showNote("No se pudo recibir «${event.fileName}»: ${event.message ?: "error desconocido"}")
                         runCatching { notifier.onFailed(event.fileName, event.message) }
-                    }
-                    is IncomingEvent.AwaitingApproval -> {
-                        updateState { state ->
-                            state.copy(
-                                pendingApproval = PendingApprovalUi(
-                                    fileName = event.fileName,
-                                    peerName = peerName(event.peerHost),
-                                    sizeBytes = event.totalBytes,
-                                    transferId = event.transferId,
-                                ),
-                            )
-                        }
-                        showNote("«${event.fileName}» de ${peerName(event.peerHost)} quiere enviarte un archivo")
                     }
                 }
             }
@@ -213,7 +253,6 @@ class HomeViewModel(
 
     override fun onEventImpl(event: HomeEvent) {
         when (event) {
-            HomeEvent.OnStart -> Unit
             HomeEvent.OnRefresh -> refresh()
             is HomeEvent.OnDeviceSelected -> {
                 updateState { it.copy(selectedDevice = event.device) }
@@ -235,23 +274,63 @@ class HomeViewModel(
             HomeEvent.OnRejectIncoming -> decideApproval(false)
             HomeEvent.OnTogglePinDialog -> updateState { it.copy(showPinDialog = !it.showPinDialog, myPin = runCatching { pairingManager.getPin() }.getOrDefault(it.myPin)) }
             is HomeEvent.OnManualIpChanged -> updateState { it.copy(manualIp = event.ip.trim().take(45)) }
-            HomeEvent.OnManualConnect -> connectManual()
+            HomeEvent.OnManualConnect -> viewModelScope.launch { connectManual() }
+            HomeEvent.OnCancelSend -> cancelSend()
+            HomeEvent.OnDismissInterrupted -> updateState { it.copy(interrupted = emptyList()) }
         }
     }
 
-    private fun connectManual() {
+    /** Cancelación del usuario: transición inmediata a Cancelling, idempotente. */
+    private fun cancelSend() {
+        val current = state.value.sendSession
+        if (current !is SendSession.Sending) return
+        val job = sendJob ?: return
+        updateState { it.copy(sendSession = SendSession.Cancelling(current)) }
+        showNote("Cancelando transferencia…")
+        job.cancel()
+    }
+
+    private suspend fun connectManual() {
         val ip = state.value.manualIp.trim()
         if (!isValidIp(ip)) {
             showNote("IP inválida: $ip")
             return
         }
-        val device = Device(id = "manual-$ip", name = "Manual ($ip)", host = ip, port = com.andyl.ignite.domain.model.TransferDefaults.PORT)
+        // Validamos que haya un Ignite en esa IP antes de agregarlo (#4)
+        val device = probeManualDevice(ip)
+        if (device == null) {
+            showNote("$ip no responde — revisá la IP, que la app esté abierta allá y el firewall (puerto ${com.andyl.ignite.domain.model.TransferDefaults.PORT})")
+            return
+        }
         val updated = (_devices.value.filterNot { it.id == device.id } + device).sortedBy { it.name.lowercase() }
         _devices.value = updated
         lastSeenByDevice[device.id] = System.currentTimeMillis()
         updateState { it.copy(devices = updated, selectedDevice = device, manualIp = "") }
-        showNote("Conectado manualmente a $ip — ahora ingresá su PIN y enviá")
+        showNote("Conectado a ${device.name} ($ip) — ahora ingresá su PIN y enviá")
     }
+
+    private suspend fun probeManualDevice(ip: String): com.andyl.ignite.domain.model.Device? {
+        val client = httpClient ?: return manualDevice(ip) // sin cliente (tests): comportamiento anterior
+        return kotlinx.coroutines.withTimeoutOrNull(2_000) {
+            runCatching {
+                val body = client.get("http://$ip:${com.andyl.ignite.domain.model.TransferDefaults.PORT}/beacon").bodyAsText()
+                val beacon = json.decodeFromString<com.andyl.ignite.domain.model.Beacon>(body)
+                com.andyl.ignite.domain.model.Device(
+                    id = beacon.deviceId,
+                    name = beacon.deviceName,
+                    host = ip,
+                    port = beacon.port,
+                )
+            }.getOrNull()
+        } ?: run { println("[Ignite][VM] probe a $ip no respondió /beacon en 2s"); null }
+    }
+
+    private fun manualDevice(ip: String) = com.andyl.ignite.domain.model.Device(
+        id = "manual-$ip",
+        name = "Manual ($ip)",
+        host = ip,
+        port = com.andyl.ignite.domain.model.TransferDefaults.PORT,
+    )
 
     private fun isValidIp(ip: String): Boolean {
         if (ip.isBlank()) return false
@@ -275,12 +354,12 @@ class HomeViewModel(
     }
 
     private fun decideApproval(approved: Boolean) {
-        val pending = state.value.pendingApproval ?: return
+        val pending = state.value.incoming as? IncomingUi.AwaitingApproval ?: return
         viewModelScope.launch {
             runCatching { receiver.decideApproval(pending.transferId, approved) }
         }
-        updateState { it.copy(pendingApproval = null) }
-        showNote(if (approved) "Aceptaste «${pending.fileName}»" else "Rechazaste «${pending.fileName}»")
+        updateState { it.copy(incoming = null) }
+        showNote(if (approved) "Aceptaste «${pending.fileName}» — recibiendo…" else "Rechazaste «${pending.fileName}»")
     }
 
     private fun openFolder(path: String) {
@@ -313,22 +392,50 @@ class HomeViewModel(
     }
 
     private fun send() {
+        // #22 política de concurrencia v1: una sola sesión activa.
+        if (state.value.sendSession != SendSession.Idle) {
+            showNote("Ya hay una transferencia en curso — esperá que termine o cancelala")
+            return
+        }
         val target = state.value.selectedDevice ?: return
         val files = state.value.pendingFiles
-        if (files.isEmpty() || sendJob != null) return
+        if (files.isEmpty()) return
         val pin = state.value.targetPin
         if (pin.length != 6) {
             showNote("Ingresá el PIN de 6 dígitos del receptor")
             return
         }
+        val queueTotalBytes = files.sumOf { it.sizeBytes }
 
-        updateState { it.copy(isSending = true, progress = 0f, sendOutcome = null) }
+        updateState {
+            it.copy(
+                sendSession = SendSession.Preparing(target.name, files.size, queueTotalBytes),
+                sendOutcome = null,
+            )
+        }
 
         sendJob = viewModelScope.launch {
             var failedFile: String? = null
-            var failedMsg: String? = null
-            for (file in files) {
-                updateState { it.copy(activeFileName = file.name, progress = 0f) }
+            var failedError: TransferError? = null
+            var cancelled = false
+            var completedBytes = 0L
+
+            for ((index, file) in files.withIndex()) {
+                updateState {
+                    it.copy(
+                        sendSession = SendSession.Sending(
+                            targetName = target.name,
+                            fileIndex = index,
+                            fileCount = files.size,
+                            fileName = file.name,
+                            fileProgress = 0f,
+                            fileSentBytes = 0L,
+                            fileTotalBytes = file.sizeBytes,
+                            completedBytesBeforeCurrent = completedBytes,
+                            totalBytes = queueTotalBytes,
+                        ),
+                    )
+                }
 
                 val record = Transfer(
                     id = 0,
@@ -344,54 +451,102 @@ class HomeViewModel(
                 repository.upsert(record)
 
                 try {
-                    sender.send(target, file.path, file.name, file.sizeBytes, pin)
-                        .collect { progress ->
-                            updateState { it.copy(progress = progress) }
-                            repository.upsert(record.copy(progress = progress))
-                            runCatching { notifier.onSending(file.name, progress, file.sizeBytes) }
+                    var lastPersisted = 0f
+                    sendFileWithRetry(target, file, pin) { progress ->
+                        val sentBytes = (file.sizeBytes * progress).toLong()
+                        updateState { s ->
+                            val session = s.sendSession
+                            if (session is SendSession.Sending && session.fileName == file.name) {
+                                s.copy(
+                                    sendSession = session.copy(
+                                        fileProgress = progress,
+                                        fileSentBytes = sentBytes,
+                                    ),
+                                )
+                            } else {
+                                s
+                            }
                         }
+                        if (progress - lastPersisted >= PROGRESS_PERSIST_STEP || progress >= 1f) {
+                            lastPersisted = progress
+                            repository.upsert(record.copy(progress = progress))
+                        }
+                        runCatching { notifier.onSending(file.name, progress, file.sizeBytes) }
+                    }
                     repository.upsert(record.copy(status = Transfer.Status.COMPLETED, progress = 1f))
                     runCatching { notifier.onCompleted(file.name, isSending = true) }
+                    completedBytes += file.sizeBytes
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    // Cancelación del usuario (o de la pantalla): NO es error.
+                    cancelled = true
+                    repository.upsert(record.copy(status = Transfer.Status.CANCELLED))
+                    runCatching { notifier.onFailed(file.name, "Cancelado por el usuario") }
+                    break
                 } catch (e: Exception) {
                     println("[Ignite][VM] envío falló «${file.name}» → ${target.host}: ${e::class.simpleName}: ${e.message}")
                     e.printStackTrace()
+                    val error = TransferError.from(e)
                     repository.upsert(record.copy(status = Transfer.Status.FAILED))
                     failedFile = file.name
-                    failedMsg = e.message
+                    failedError = error
                     runCatching { notifier.onFailed(file.name, e.message) }
-                    showNote(e.message ?: "Error al enviar")
+                    showNote(error.userMessage(target.name))
                     break
                 }
             }
 
             updateState {
                 it.copy(
-                    isSending = false,
-                    progress = 1f,
-                    activeFileName = null,
-                    pendingFiles = emptyList(),
+                    sendSession = SendSession.Idle,
+                    // En cancel conservamos la cola para reintentar fácil
+                    pendingFiles = if (cancelled) it.pendingFiles else emptyList(),
                 )
             }
-            val outcome = if (failedFile == null) {
-                SendOutcome(files.first().name, target.name, success = true, count = files.size)
-            } else {
-                SendOutcome(failedFile, target.name, success = false, count = 1)
-            }
-            if (failedMsg != null && failedFile != null) {
-                showNote(failedMsg!!)
+            val outcome = when {
+                cancelled -> SendOutcome(files.first().name, target.name, success = false, cancelled = true)
+                failedFile == null -> SendOutcome(files.first().name, target.name, success = true, count = files.size)
+                else -> SendOutcome(failedFile!!, target.name, success = false, count = 1, error = failedError)
             }
             showOutcome(outcome)
             sendJob = null
         }
     }
 
-    private fun showNote(text: String) {
-        noteJob?.cancel()
-        updateState { it.copy(note = text) }
-        noteJob = viewModelScope.launch {
-            delay(NOTE_DURATION_MS)
-            updateState { s -> s.copy(note = null) }
+    /**
+     * Envía un archivo reintentando automáticamente ante cortes de red.
+     * Cada reintento consulta el offset remoto (queryOffset en KtorFileSender)
+     * y retoma desde donde quedó, sin reenviar bytes.
+     */
+    private suspend fun sendFileWithRetry(
+        target: Device,
+        file: PendingFile,
+        pin: String,
+        onProgress: suspend (Float) -> Unit,
+    ) {
+        repeat(MAX_SEND_ATTEMPTS) { attempt ->
+            try {
+                sender.send(target, file.path, file.name, file.sizeBytes, pin).collect { onProgress(it) }
+                return
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val isLastAttempt = attempt == MAX_SEND_ATTEMPTS - 1
+                // Reintentar no sirve ante PIN/rechazo del receptor (#26)
+                val isUserError = TransferError.from(e) is TransferError.PinRejected
+                if (isUserError || isLastAttempt) throw e
+                val backoffMs = RETRY_BACKOFF_MS[attempt]
+                println("[Ignite][VM] reintento ${attempt + 1}/$MAX_SEND_ATTEMPTS de '${file.name}' en ${backoffMs}ms: ${e.message}")
+                showNote(
+                    "Se cortó el envío de «${file.name}» — reintentando (${attempt + 2}° intento, sigue desde donde quedó)…",
+                )
+                delay(backoffMs)
+            }
         }
+    }
+
+    /** Feedback transitorio vía effect (#28): la UI decide cómo mostrarlo. */
+    private fun showNote(text: String) {
+        sendEffect(HomeEffect.ShowSnackbar(text))
     }
 
     private fun showOutcome(outcome: SendOutcome) {
@@ -407,8 +562,10 @@ class HomeViewModel(
         const val STALE_AFTER_MS = 7_000L
         const val PRUNE_INTERVAL_MS = 1_000L
         const val CONNECT_GRACE_MS = 8_000L
-        const val NOTE_DURATION_MS = 4_000L
         const val OUTCOME_DURATION_MS = 5_000L
         const val MAX_RECENT = 4
+        const val MAX_SEND_ATTEMPTS = 4
+        const val PROGRESS_PERSIST_STEP = 0.05f
+        val RETRY_BACKOFF_MS = longArrayOf(1_500L, 3_000L, 6_000L)
     }
 }

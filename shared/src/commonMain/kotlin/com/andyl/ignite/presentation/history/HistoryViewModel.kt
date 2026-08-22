@@ -3,8 +3,6 @@ package com.andyl.ignite.presentation.history
 import androidx.lifecycle.viewModelScope
 import com.andyl.ignite.domain.TransferRepository
 import com.andyl.ignite.presentation.MviViewModel
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
@@ -14,8 +12,6 @@ class HistoryViewModel(
     private val repository: TransferRepository,
 ) : MviViewModel<HistoryEvent, HistoryState, HistoryEffect>() {
 
-    private var noteJob: Job? = null
-
     override fun initialState(): HistoryState = HistoryState()
 
     init {
@@ -23,12 +19,14 @@ class HistoryViewModel(
     }
 
     private fun observeTransfers() {
+        // #32: reintentar limpia el error previo y vuelve a observar
+        updateState { it.copy(error = null) }
         repository.observeTransfers()
             .onEach { list ->
-                updateState { it.copy(transfers = list, isLoading = false) }
+                updateState { it.copy(transfers = list, isLoading = false, error = null) }
             }
-            .catch { _ ->
-                updateState { it.copy(isLoading = false) }
+            .catch { e ->
+                updateState { it.copy(isLoading = false, error = e.message ?: "Error al cargar el historial") }
             }
             .launchIn(viewModelScope)
     }
@@ -43,16 +41,7 @@ class HistoryViewModel(
     private fun clearHistory() {
         viewModelScope.launch {
             repository.clearHistory()
-            noteJob?.cancel()
-            updateState { it.copy(note = "Historial borrado") }
-            noteJob = viewModelScope.launch {
-                delay(NOTE_DURATION_MS)
-                updateState { it.copy(note = null) }
-            }
+            sendEffect(HistoryEffect.ShowSnackbar("Historial borrado"))
         }
-    }
-
-    private companion object {
-        const val NOTE_DURATION_MS = 4_000L
     }
 }

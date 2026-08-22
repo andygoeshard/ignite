@@ -18,7 +18,7 @@ data class Transfer(
 ) {
     enum class Direction { SENT, RECEIVED }
 
-    enum class Status { QUEUED, IN_PROGRESS, COMPLETED, FAILED }
+    enum class Status { QUEUED, IN_PROGRESS, COMPLETED, FAILED, CANCELLED, INTERRUPTED }
 
     val isActive: Boolean
         get() = status == Status.IN_PROGRESS

@@ -64,6 +64,7 @@ val appModule: Module = module {
             storage = get(),
             notifier = get(),
             pairingManager = get(),
+            httpClient = get(),
         )
     }
     viewModelOf(::HistoryViewModel)

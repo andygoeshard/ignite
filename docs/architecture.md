@@ -97,8 +97,12 @@ KtorFileReceiver (servidor embebido, puerto 48213)
 | Navegación | Navigation 3 (`org.jetbrains.androidx.navigation3`) | usar la variante de JetBrains CMP; la `androidx` no funciona en Desktop |
 | File picker | FileKit 0.15 | picker multiplataforma; el drag & drop se implementa con `Modifier.dragAndDropTarget` (Desktop) |
 
+## Política de concurrencia de transferencias (#22)
+
+v1: **una sola sesión activa**. La máquina de estados `SendSession` (Idle → Preparing → Sending → Idle/Cancelling) vive en `HomeContract` y `canSend` exige `sendSession is Idle`. Un segundo envío mientras hay uno activo muestra "Ya hay una transferencia en curso". Sesiones simultáneas (múltiples peers en paralelo) quedan para una v2 si hay demanda real; requeriría colas por peer y agregación de notificaciones.
+
 ## Puerto / constantes
 
 - `TransferDefaults.PORT` = 48213 (HTTP) — `data/network` y `domain/model/TransferDefaults.kt`.
 - Descubrimiento UDP = 48432 — `data/network/UdpDeviceDiscovery.kt`.
-- Rutas HTTP: `GET /` (health), `POST /upload` (multipart con `fileName` en query).
+- Rutas HTTP: `GET /` (health), `GET /beacon` (metadatos del dispositivo), `POST /upload` (cuerpo binario crudo `octet-stream`; metadatos en query `fileName` y headers `X-Ignite-Sha256`, `X-Ignite-Offset`, `X-Ignite-Total-Bytes`; reanudación vía `GET /upload/status`).
