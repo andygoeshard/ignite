@@ -297,7 +297,8 @@ private fun DevicesCard(
         when {
             state.devices.isNotEmpty() -> {
                 val listModifier =
-                    if (flexList) Modifier.weight(1f) else Modifier.heightIn(min = 96.dp)
+                    // max obligatorio: dentro del scroll compacto, altura infinita crashea el LazyColumn
+                    if (flexList) Modifier.weight(1f) else Modifier.heightIn(min = 96.dp, max = 260.dp)
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                     modifier = listModifier.fillMaxWidth(),
