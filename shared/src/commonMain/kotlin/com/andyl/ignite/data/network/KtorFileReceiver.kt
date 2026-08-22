@@ -24,6 +24,7 @@ import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.plugins.statuspages.exception
 import io.ktor.server.request.header
 import io.ktor.server.request.receiveMultipart
+import io.ktor.server.request.uri
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
@@ -120,7 +121,9 @@ class KtorFileReceiver(
     private fun Application.module() {
         install(CallLogging)
         install(StatusPages) {
-            exception<Throwable> { call, _ ->
+            exception<Throwable> { call, cause ->
+                println("[Ignite][RCV] error no manejado en ${call.request.uri}: ${cause::class.simpleName}: ${cause.message}")
+                cause.printStackTrace()
                 call.respond(HttpStatusCode.InternalServerError)
             }
         }
@@ -169,6 +172,10 @@ class KtorFileReceiver(
                 val totalBytesHeader = call.request.header(HEADER_TOTAL_BYTES)?.toLongOrNull()
                 val totalBytes = totalBytesHeader ?: call.request.headers[HttpHeaders.ContentLength]?.toLongOrNull() ?: 0L
                 val peer = call.request.local.remoteHost
+                println(
+                    "[Ignite][RCV] /upload de $peer: name=${requestedName ?: "?"} total=${totalBytes / 1024 / 1024}MB " +
+                        "offset=$offset sha=${expectedSha?.take(12)}… contentLength=${call.request.headers[HttpHeaders.ContentLength]}",
+                )
                 var savedFile: File? = null
 
                 // 2) Storage space check (before writing)
@@ -190,6 +197,7 @@ class KtorFileReceiver(
                     synchronized(pendingApprovals) { pendingApprovals[transferId] = deferred }
                     _incomingEvents.tryEmit(IncomingEvent.AwaitingApproval(probeFileName, peer, totalBytes, transferId))
                     val approved = withTimeoutOrNull(60_000) { deferred.await() } ?: false
+                    println("[Ignite][RCV] aprobación '$probeFileName' → ${if (approved) "aceptada" else "rechazada/timeout (60s)"}")
                     if (!approved) {
                         synchronized(pendingApprovals) { pendingApprovals.remove(transferId) }
                         _incomingEvents.tryEmit(IncomingEvent.Failed(probeFileName, peer, "Rechazado por el usuario"))
@@ -208,6 +216,8 @@ class KtorFileReceiver(
                     }
                 }.onFailure { error ->
                     val name = savedFile?.name ?: requestedName ?: "archivo"
+                    println("[Ignite][RCV] recepción falló '$name': ${error::class.simpleName}: ${error.message}")
+                    error.printStackTrace()
                     // No borrar archivo parcial si es por corte de red: dejar para reanudación
                     val isResumeCandidate = error.message?.contains("SHA") == false
                     if (!isResumeCandidate) savedFile?.delete()
@@ -280,10 +290,13 @@ class KtorFileReceiver(
         )
         repository.upsert(record)
         _incomingEvents.tryEmit(IncomingEvent.Started(fileName, peer, totalBytes))
+        println("[Ignite][RCV] recibiendo '$fileName' → ${target.absolutePath} (offset=$offset total=${totalBytes / 1024 / 1024}MB)")
+        val t0 = System.currentTimeMillis()
 
         var lastEmitted = record.progress
         val channel = part.provider()
         var received = offset
+        var lastLoggedPct = if (totalBytes > 0) ((received * 100) / totalBytes).toInt() else 0
         val digest = if (expectedSha256 != null) MessageDigest.getInstance("SHA-256") else null
         // If resuming, we need to feed existing bytes into digest if SHA will be verified over whole file.
         // For simplicity we verify only the final file after transfer; so we digest existing part now.
@@ -322,20 +335,43 @@ class KtorFileReceiver(
                             IncomingEvent.Progress(fileName, peer, received, totalBytes, fraction),
                         )
                     }
+                    if (totalBytes > 0) {
+                        val pct = ((received * 100) / totalBytes).toInt()
+                        if (pct >= lastLoggedPct + 20) {
+                            lastLoggedPct = pct
+                            println("[Ignite][RCV] '$fileName' $pct% (${"${received / 1024 / 1024}MB"}/${totalBytes / 1024 / 1024}MB)")
+                        }
+                    }
                 }
             }
         }
+
+        // Detección de stream cortado: el sender murió antes de mandar todo
+        val expectedRemaining = totalBytes - offset
+        if (totalBytes > 0 && received < expectedRemaining) {
+            println("[Ignite][RCV] STREAM CORTADO '$fileName': $received/${expectedRemaining} bytes (faltan ${(expectedRemaining - received) / 1024 / 1024}MB)")
+            repository.upsert(record.copy(status = Transfer.Status.FAILED, progress = 0f))
+            _incomingEvents.tryEmit(
+                IncomingEvent.Failed(fileName, peer, "Conexión cortada a ${received * 100 / expectedRemaining}% — se reanuda al reintentar"),
+            )
+            throw IllegalStateException("Stream cortado: $received/$expectedRemaining bytes")
+        }
+        println("[Ignite][RCV] '$fileName' completo: $received bytes en ${System.currentTimeMillis() - t0}ms")
 
         // SHA-256 verification
         if (expectedSha256 != null && digest != null) {
             val actual = digest.digest().joinToString("") { "%02x".format(it) }
             if (!actual.equals(expectedSha256, ignoreCase = true)) {
+                println("[Ignite][RCV] SHA-256 MISMATCH '$fileName': esperado=${expectedSha256.take(12)}… real=${actual.take(12)}…")
                 target.delete()
                 repository.upsert(record.copy(status = Transfer.Status.FAILED, progress = 0f))
                 _incomingEvents.tryEmit(IncomingEvent.Failed(fileName, peer, "SHA-256 mismatch: esperado $expectedSha256, recibido $actual"))
                 throw IllegalStateException("SHA-256 verification failed")
             }
+            println("[Ignite][RCV] SHA-256 OK '$fileName'")
         }
+
+        println("[Ignite][RCV] '$fileName' COMPLETADO y guardado en ${target.absolutePath}")
 
         repository.upsert(
             record.copy(sizeBytes = received, status = Transfer.Status.COMPLETED, progress = 1f),

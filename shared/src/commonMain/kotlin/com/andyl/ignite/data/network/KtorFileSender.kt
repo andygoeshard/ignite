@@ -42,12 +42,23 @@ class KtorFileSender(
         pin: String?,
     ): Flow<Float> = callbackFlow {
         // 1) Compute SHA-256 upfront (for integrity header)
-        val sha256 = runCatching { sha256File(File(localPath)) }.getOrNull()
+        println("[Ignite][SND] inicio: '$fileName' (${sizeBytes / 1024 / 1024}MB) → ${target.host}:${target.port} pin=${pin != null}")
+        val t0Sha = System.currentTimeMillis()
+        val sha256 = runCatching { sha256File(File(localPath)) }
+            .onFailure {
+                println("[Ignite][SND] sha256File falló para $localPath: ${it.message}")
+                it.printStackTrace()
+            }
+            .getOrNull()
+        println("[Ignite][SND] sha256 calculado en ${System.currentTimeMillis() - t0Sha}ms: ${sha256?.take(12)}…")
 
         // 2) Query resumption offset (best-effort, falls back to 0)
         var offset = 0L
         if (pin != null) {
-            offset = runCatching { queryOffset(target, fileName, pin) }.getOrDefault(0L)
+            offset = runCatching { queryOffset(target, fileName, pin) }
+                .onFailure { println("[Ignite][SND] queryOffset falló: ${it.message}") }
+                .getOrDefault(0L)
+            println("[Ignite][SND] offset remoto: $offset")
             if (offset >= sizeBytes) offset = 0L // already complete / bogus
         }
 
@@ -63,6 +74,8 @@ class KtorFileSender(
                 return@callbackFlow
             } catch (e: Exception) {
                 lastError = e
+                println("[Ignite][SND] intento $attempt falló: ${e::class.simpleName}: ${e.message}")
+                e.printStackTrace()
                 // If offset mismatch (409) retry once without offset
                 if (e.message?.contains("Offset mismatch") == true && currentOffset > 0) {
                     currentOffset = 0L
@@ -88,6 +101,9 @@ class KtorFileSender(
     ) {
         val remaining = sizeBytes - offset
         var sent = offset
+        val t0 = System.currentTimeMillis()
+        var lastPct = ((offset * 100) / sizeBytes.coerceAtLeast(1)).toInt()
+        println("[Ignite][SND] subiendo '$fileName' desde offset $offset (${remaining / 1024 / 1024}MB restantes)")
         // Report initial progress if resuming
         if (offset > 0) trySend((offset.toFloat() / sizeBytes).coerceIn(0f, 1f))
 
@@ -112,11 +128,18 @@ class KtorFileSender(
                                 channel.writeFully(buffer, 0, read)
                                 sent += read
                                 trySend((sent.toFloat() / sizeBytes).coerceIn(0f, 1f))
+                                val pct = ((sent * 100) / sizeBytes.coerceAtLeast(1)).toInt()
+                                if (pct >= lastPct + 25) {
+                                    lastPct = pct
+                                    println("[Ignite][SND] progreso $pct% (${"${sent / 1024 / 1024}MB"}/${sizeBytes / 1024 / 1024}MB)")
+                                }
                             }
                         }
                     }
+                    println("[Ignite][SND] archivo leído completo: $sent bytes en ${System.currentTimeMillis() - t0}ms")
                     channel.close()
                 } catch (e: Exception) {
+                    println("[Ignite][SND] productor cortado a los $sent bytes: ${e::class.simpleName}: ${e.message}")
                     channel.cancel(e)
                 }
             }
@@ -139,6 +162,7 @@ class KtorFileSender(
             header(HEADER_TOTAL_BYTES, sizeBytes.toString())
         }
 
+        println("[Ignite][SND] respuesta: ${response.status} en ${System.currentTimeMillis() - t0}ms (${sent / 1024 / 1024}MB enviados)")
         when (response.status) {
             HttpStatusCode.OK -> return
             HttpStatusCode.Unauthorized -> throw IllegalStateException("PIN incorrecto - verifica el código en el receptor")

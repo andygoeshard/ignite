@@ -353,6 +353,8 @@ class HomeViewModel(
                     repository.upsert(record.copy(status = Transfer.Status.COMPLETED, progress = 1f))
                     runCatching { notifier.onCompleted(file.name, isSending = true) }
                 } catch (e: Exception) {
+                    println("[Ignite][VM] envío falló «${file.name}» → ${target.host}: ${e::class.simpleName}: ${e.message}")
+                    e.printStackTrace()
                     repository.upsert(record.copy(status = Transfer.Status.FAILED))
                     failedFile = file.name
                     failedMsg = e.message
