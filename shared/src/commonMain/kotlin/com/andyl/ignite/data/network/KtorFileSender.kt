@@ -61,7 +61,16 @@ class KtorFileSender(
                 .onFailure { println("[Ignite][SND] queryOffset falló: ${it.message}") }
                 .getOrDefault(0L)
             println("[Ignite][SND] offset remoto: $offset")
-            if (offset >= sizeBytes) offset = 0L // already complete / bogus
+            if (offset >= sizeBytes && sizeBytes > 0) {
+                // El receptor YA tiene el archivo completo (ej.: la respuesta OK
+                // se perdió tras una transferencia exitosa). Reenviarlo crearía
+                // un duplicado "(1)" — éxito idempotente y listo.
+                println("[Ignite][SND] '$fileName' ya está completo en el receptor — no se reenvía")
+                trySend(1f)
+                close()
+                awaitClose { }
+                return@callbackFlow
+            }
         }
 
         var attempt = 0

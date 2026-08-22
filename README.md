@@ -18,12 +18,18 @@ Punto a punto, entre dispositivos de la misma red Wi-Fi.
 
 ## ✨ Qué hace
 
-- 🔍 **Descubrimiento automático** — los dispositivos se anuncian y se detectan solos vía UDP broadcast. Abrí la app y aparecen los peers de la red.
-- 📤 **Enviar en un toque** — seleccionás un archivo (o lo arrastrás en Desktop) y elegís el dispositivo destino.
-- 📥 **Recibir directo** — servidor HTTP embebido en cada dispositivo; los archivos se guardan en local.
-- 📊 **Progreso en tiempo real** — barra de progreso por transferencia.
-- 🕓 **Historial** — registro de envíos y recepciones persistido con Room.
-- 🖥️ **Drag & drop** en Desktop.
+- 🔍 **Descubrimiento automático** — los dispositivos se detectan solos combinando UDP broadcast + mDNS/DNS-SD. Si un firewall o una VPN estorban, entra el plan C: escaneo de la subred `/24`. Abrí la app y aparecen los peers.
+- 🤝 **Aprobación antes de recibir** — nadie te manda nada sin permiso: diálogo con **Aceptar / Cancelar / Más tarde**. "Más tarde" deja la conexión abierta 2 minutos con un banner de cuenta atrás.
+- 🔢 **PIN de emparejamiento** — código de 6 dígitos que el emisor debe conocer (header `X-Ignite-Pin`). Regenerable desde la app.
+- 💚 **Dispositivos confiables** — tras un envío exitoso el PIN queda recordado para ese dispositivo: la próxima vez se precarga solo (candadito 🔒). Podés olvidarlo cuando quieras.
+- 📤 **Enviar en un toque** — cola de varios archivos, arrastrar y soltar en Desktop, atajo `Ctrl+O`.
+- ⏸️ **Cancelar y reanudar** — cortá un envío o una recepción en cualquier momento; si la app se cerró a mitad de transferencia, al volver te lo avisa y retoma donde quedó.
+- ♻️ **Anti-duplicados** — cada archivo tiene un ID estable (`SHA-256` de nombre+tamaño): reintentos y reconexiones no generan copias "(1)", "(2)".
+- 📊 **Progreso neón en tiempo real** — barra con degradado verde→cian por archivo y total del lote, bytes transferidos y porcentaje.
+- 🕓 **Historial persistente** — todos los envíos y recepciones quedan registrados con Room.
+- 🔔 **Notificaciones nativas** — progreso en vivo tanto en Android como en Desktop.
+- 🎛️ **Accesibilidad** — respeta "reducir movimiento" del sistema (Android); listas con estados claros de carga/vacío/error y botón Reintentar.
+- 🌑 **Look cyberpunk** — verde neón sobre negro puro, esquinas cortadas, tipografía mono. La identidad del producto, no un modo.
 
 > 🚀 "Ignite" nació para mover archivos grandes entre tus dispositivos sin subirlos a ningún lado.
 
@@ -36,7 +42,7 @@ Punto a punto, entre dispositivos de la misma red Wi-Fi.
 | 🧠 Lenguaje | Kotlin 2.4 + Kotlin Multiplatform |
 | 🎨 UI | Compose Multiplatform 1.11 |
 | 🌐 Red | Ktor 3.5 (servidor embebido + cliente HTTP) |
-| 📡 Descubrimiento | UDP broadcast (puerto `48432`) |
+| 📡 Descubrimiento | UDP broadcast (`48432`) + mDNS + escaneo de subred |
 | 💾 Persistencia | Room 2.8 (multiplatform) |
 | 💉 DI | Koin 4.2 |
 | 🧭 Navegación | Navigation 3 |
@@ -63,11 +69,22 @@ Instalá el APK en un dispositivo y ejecutá Desktop en tu máquina (o dos telé
 
 - **Misma red local** (misma subred Wi-Fi).
 - Android: la app pide permisos de red/wi-fi (declarados en el `AndroidManifest.xml`). Concedelos si el sistema los pide.
-- El puerto HTTP es `48213`; si algún firewall de SO bloquea conexiones entrantes, abrí ese puerto.
+- El puerto HTTP es `48213` y el de descubrimiento `48432`; si algún firewall de SO bloquea conexiones entrantes, abrilos.
+- Si aun así no se ven (VPN, AP isolation), usá **Conectar por IP**: en Windows `ipconfig → IPv4`, en Mac `ifconfig | grep inet`.
 - Los archivos recibidos en Desktop van a:
   - macOS: `~/Library/Application Support/com.andyl.ignite/received`
   - Windows: `%APPDATA%\com.andyl.ignite\received`
   - Linux: `~/.local/share/com.andyl.ignite/received`
+- En Android se guardan en la carpeta de descargas configurada (elegible desde el perfil).
+
+---
+
+## 🔐 Seguridad y privacidad
+
+- **Cero nube**: todo viaja directo por tu LAN; ningún byte sale a internet.
+- **Autorización doble**: el receptor aprueba cada transferencia y valida el PIN del emisor.
+- **Confianza explícita**: recordar un PIN es una decisión tuya por dispositivo, reversible desde la lista.
+- TLS con certificado self-signed queda como *upgrade path* documentado (`TlsConfig`) para blindar contra sniffing pasivo en redes compartidas.
 
 ---
 
@@ -75,24 +92,35 @@ Instalá el APK en un dispositivo y ejecutá Desktop en tu máquina (o dos telé
 
 ```
 com.andyl.ignite
-├── App.kt              # raíz Compose (theme + Navigation 3)
-├── di/                 # Koin: appModule + platformModule (expect/actual)
-├── domain/             # modelos y contratos puros
-│   ├── model/          # Device, Transfer, Beacon
-│   ├── DeviceDiscovery.kt
-│   ├── FileSender.kt   # envío con Flow<Float> de progreso
-│   ├── FileReceiver.kt # recepción con progreso
-│   └── TransferRepository.kt
-├── data/               # implementaciones
-│   ├── network/        # Ktor sender/receiver + UDP discovery
-│   ├── db/             # Room: entity, dao, database (por plataforma)
-│   └── Platform.kt     # AppStorage / DeviceInfo (expect/actual)
-└── presentation/       # UI (MVI: Event / State / Effect)
+├── App.kt                    # raíz Compose (theme + Navigation 3)
+├── di/                       # Koin: appModule + platformModule (expect/actual)
+├── domain/                   # modelos y contratos puros
+│   ├── model/                # Device, Transfer, Beacon
+│   ├── DeviceDiscovery.kt    # contrato de descubrimiento
+│   ├── FileSender.kt         # envío con Flow<Float> de progreso
+│   ├── FileReceiver.kt       # recepción con aprobación y progreso
+│   ├── PairingManager.kt     # PIN de emparejamiento (expect/actual)
+│   ├── TrustedDevices.kt     # PIN recordado por dispositivo
+│   └── TransferRepository.kt # historial (Room)
+├── data/
+│   ├── network/
+│   │   ├── UdpDeviceDiscovery.kt      # broadcast UDP
+│   │   ├── MdnsDeviceDiscovery.kt     # DNS-SD
+│   │   ├── CompositeDeviceDiscovery.kt # merge de estrategias
+│   │   ├── SubnetScannerDiscovery.kt  # fallback /24 anti-VPN
+│   │   ├── KtorFileSender.kt          # reintentos, resume, uploadId
+│   │   ├── KtorFileReceiver.kt        # aprobación, TTLs, anti-dupes
+│   │   └── TlsConfig.kt               # upgrade path HTTPS
+│   ├── db/                   # Room: entity, dao, database (por plataforma)
+│   ├── notification/         # notificaciones nativas (expect/actual)
+│   ├── MotionSettings.kt     # "reducir movimiento" (#30)
+│   └── Platform.kt           # AppStorage / DeviceInfo (expect/actual)
+└── presentation/             # UI (MVI: Event / State / Effect)
     ├── MviViewModel.kt
     ├── navigation/
-    ├── home/           # radar + selección + envío + progreso
+    ├── home/                 # card héroe de transmisión + dispositivos + recepción
     ├── history/
-    └── theme/
+    └── theme/                # paleta cyberpunk verde neón / negro
 ```
 
 Detalle del patrón MVI y el flujo de transferencia en [`docs/architecture.md`](./docs/architecture.md).
@@ -105,8 +133,9 @@ Detalle del patrón MVI y el flujo de transferencia en [`docs/architecture.md`](
 ./gradlew :shared:jvmTest
 ```
 
-Cubre el pipeline completo: enviar → recibir (verifica contenido idéntico y progreso 100%) y
-detección de pares vía beacon UDP.
+Cubre el pipeline completo: enviar → recibir (verifica contenido idéntico y progreso 100%),
+detección de pares vía beacon UDP, recordatorio de PIN por dispositivo (`TrustedDevices`)
+y lógica del ViewModel (aprobaciones diferidas, olvidar dispositivo, reanudación).
 
 ---
 
@@ -114,10 +143,10 @@ detección de pares vía beacon UDP.
 
 - [ ] 📱 Target iOS (mDNS/NSD + servidor nativo)
 - [ ] 🗃️ Room persistente en Desktop (driver nativo)
-- [ ] 📁 Enviar múltiples archivos y carpetas
-- [ ] ⏸️ Cancelar / reanudar transferencias
-- [ ] 🔐 Cifrado opcional punto a punto
-- [ ] 🖥️ Pantalla de "recibir" con aceptar/rechazar
+- [ ] 📁 Enviar carpetas completas
+- [ ] 🔐 TLS punto a punto con certificado self-signed + fingerprint pinning
+- [ ] 📷 Emparejar por QR (PIN + fingerprint)
+- [ ] 🌍 i18n (strings a recursos CMP)
 
 ---
 

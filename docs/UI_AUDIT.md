@@ -128,3 +128,20 @@ Prioridad general: integridad primero, luego máquina de estados/UX de transfere
 - [ ] Indentación completa de HomeScreen (cosmético).
 - [ ] Migrar strings a recursos CMP (`Res.string`) si algún día hay i18n.
 - [ ] El banner "Más tarde" sólo vive en Home: si navegás a Historial, la cuenta atrás sigue corriendo pero no se ve (v1 aceptable).
+
+### Segunda ronda anti-duplicados (mismo día)
+
+Revisando de nuevo el flujo quedaban dos huecos que seguían produciendo copias:
+
+1. **Sender**: si `queryOffset` devolvía el archivo completo (`offset >= sizeBytes`), se hacía `offset = 0` y se **reenviaba todo desde cero** → el receptor lo guardaba como "(1)". Típico tras perder la respuesta OK de una transferencia que en realidad salió bien. Fix: éxito idempotente — no se reenvía nada.
+2. **Receiver**: un reintento del mismo archivo después de completado volvía a pedir aprobación, y una reanudación tras corte de red también re-preguntaba. Fix: memoria `recentlyCompleted` / `recentlyApproved` con TTL de 5 min por uploadId — los reintentos tardíos reciben OK directo y las reanudaciones pasan sin re-preguntar.
+3. Los pendientes huérfanos (cliente corta la conexión mientras esperabas decidir) ahora se limpian al detectar la cancelación, para no envenenar envíos futuros del mismo archivo.
+
+### Tercera ronda — Rediseño visual cyberpunk (verde neón / negro puro)
+
+- [x] **Tema nuevo** (`Theme.kt`): paleta verde neón `#00FF87` + cian `#00E5FF` sobre negro puro. Siempre oscuro (es la identidad del producto, no un modo). Esquinas **cortadas** (`CutCornerShape`) en cards/botones/chips → look terminal.
+- [x] **Barra de progreso neón propia** (`NeonProgressBar`): track oscuro con borde, relleno degradado verde→cian y banda de brillo que recorre el tramo lleno. Reemplaza a `LinearProgressIndicator` en envío y recepción.
+- [x] **Card héroe "Transmisión"** (`TransferCard`): consolida lo que estaba desparramado en 4 secciones (PIN arriba, cola, sesión, botones). Arriba el estado de sesión animado: nombre del archivo grande, barra neón 14dp, bytes/porcentaje mono, barra fina global para lotes, chip de estado (LISTO/PREPARANDO/ENVIANDO/CANCELANDO/COMPLETO/ERROR) y Cancelar en la cabecera. Debajo: cola compacta sin card propia, PIN destino mono con nota de PIN recordado, y acciones Agregar/Enviar al pie.
+- [x] **Panel secundario "Dispositivos"** (`DevicesCard`): más apagado que la héroe (surfaceContainerLow). Lista tri-state compacta (#32 intacto), conexión manual inline (IP + Conectar, Enter funciona) como pie de la misma card, y el propio PIN como chip mono regenerable en la cabecera. **Radar eliminado** (decorativo, competía con lo importante).
+- [x] **Jerarquía**: en compacto la card Transmisión encabeza la pantalla; dispositivos después; recibidos al final. En expandido: dispositivos | transmisión | recibidos.
+- [x] Banners/cards restantes alineados: shapes del tema (cut-corner) en DeviceRow, Recibidos, Recepción entrante (barra neón), banner "Más tarde" e interrumpidas. Historial: badges con shapes del tema.

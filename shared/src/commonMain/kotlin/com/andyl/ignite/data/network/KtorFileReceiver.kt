@@ -78,10 +78,44 @@ class KtorFileReceiver(
 
     private val pendingApprovals = mutableMapOf<String, PendingApproval>()
 
+    /** uploadIds completados hace poco → timestamp. Permite éxito idempotente
+     *  si un reintento llega después de que la transferencia ya terminó bien. */
+    private val recentlyCompleted = mutableMapOf<String, Long>()
+
+    /** uploadIds aprobados hace poco → timestamp. Una reanudación tras un corte
+     *  de red no vuelve a preguntar: ya dijiste que sí a este archivo. */
+    private val recentlyApproved = mutableMapOf<String, Long>()
+
     @Volatile
     private var activeReceivingUploadId: String? = null
 
     private val startMutex = Mutex()
+
+    private fun isRecentlyCompleted(uploadId: String): Boolean = synchronized(recentlyCompleted) {
+        val at = recentlyCompleted[uploadId] ?: return false
+        System.currentTimeMillis() - at < COMPLETED_TTL_MS
+    }
+
+    private fun isRecentlyApproved(uploadId: String): Boolean = synchronized(recentlyApproved) {
+        val at = recentlyApproved[uploadId] ?: return false
+        System.currentTimeMillis() - at < COMPLETED_TTL_MS
+    }
+
+    private fun markCompleted(uploadId: String) = synchronized(recentlyCompleted) {
+        recentlyCompleted[uploadId] = System.currentTimeMillis()
+        Unit
+    }
+
+    private fun markApproved(uploadId: String) = synchronized(recentlyApproved) {
+        recentlyApproved[uploadId] = System.currentTimeMillis()
+        Unit
+    }
+
+    private fun pruneCompleted() {
+        val cutoff = System.currentTimeMillis() - COMPLETED_TTL_MS
+        synchronized(recentlyCompleted) { recentlyCompleted.values.removeAll { it < cutoff } }
+        synchronized(recentlyApproved) { recentlyApproved.values.removeAll { it < cutoff } }
+    }
 
     override suspend fun start() = startMutex.withLock {
         if (engine != null) return@withLock
@@ -229,8 +263,22 @@ class KtorFileReceiver(
                 val uploadId = call.request.header(HEADER_UPLOAD_ID)?.takeIf { it.isNotBlank() }
                     ?: "$peer-$probeFileName-${System.currentTimeMillis()}"
                 if (requiresApproval) {
+                    pruneCompleted()
+
+                    // a) Ya completado hace poco (respuesta perdida tras éxito):
+                    //    éxito idempotente, sin tocar disco ni pedir aprobación.
+                    if (isRecentlyCompleted(uploadId)) {
+                        println("[Ignite][RCV] '$probeFileName' ya se recibió antes — OK idempotente (upload=${uploadId.take(8)}…)")
+                        call.respond(HttpStatusCode.OK)
+                        return@post
+                    }
+
+                    // b) Reanudación del mismo archivo en curso, o ya aprobado hace
+                    //    poco (corte de red a mitad): sigue derecho sin re-preguntar.
+                    val resuming = activeReceivingUploadId == uploadId || isRecentlyApproved(uploadId)
+
                     var pending = synchronized(pendingApprovals) { pendingApprovals[uploadId] }
-                    if (pending == null) {
+                    if (!resuming && pending == null) {
                         // Ocupado: otra solicitud distinta espera decisión o hay recepción activa
                         val busy = synchronized(pendingApprovals) {
                             pendingApprovals.isNotEmpty() || activeReceivingUploadId != null
@@ -246,16 +294,26 @@ class KtorFileReceiver(
                         pending = PendingApproval(transferId = uploadId)
                         synchronized(pendingApprovals) { pendingApprovals[uploadId] = pending }
                         _incomingEvents.tryEmit(IncomingEvent.AwaitingApproval(probeFileName, peer, totalBytes, uploadId))
-                    } else {
+                    } else if (pending != null) {
                         // Mismo archivo reintentando: extiende la ventana, no apila prompts
                         println("[Ignite][RCV] reintento de '${probeFileName}' (upload=${uploadId.take(8)}…) — ventana extendida")
                         pending.deadline = System.currentTimeMillis() + APPROVAL_WINDOW_MS
                     }
 
-                    val approved = awaitDecision(uploadId, pending)
-                    println("[Ignite][RCV] aprobación '$probeFileName' → ${if (approved) "aceptada" else "rechazada/timeout (${APPROVAL_WINDOW_MS / 1000}s)"}")
+                    val approved = resuming || try {
+                        awaitDecision(uploadId, pending!!)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        // El cliente cortó la conexión mientras esperábamos: no dejar
+                        // el pendiente colgado para siempre (envenenaría reenvíos futuros)
+                        synchronized(pendingApprovals) { pendingApprovals.remove(uploadId) }
+                        throw e
+                    }
+                    if (!resuming) {
+                        println("[Ignite][RCV] aprobación '$probeFileName' → ${if (approved) "aceptada" else "rechazada/timeout (${APPROVAL_WINDOW_MS / 1000}s)"}")
+                        if (approved) markApproved(uploadId)
+                    }
                     if (!approved) {
-                        synchronized(pendingApprovals) { pendingApprovals.remove(uploadId, pending) }
+                        synchronized(pendingApprovals) { pendingApprovals.remove(uploadId) }
                         _incomingEvents.tryEmit(IncomingEvent.Failed(probeFileName, peer, "Rechazado por el usuario"))
                         call.respond(HttpStatusCode.Forbidden, "Transfer rejected by user")
                         return@post
@@ -296,6 +354,7 @@ class KtorFileReceiver(
                 }
 
                 if (savedFile != null) {
+                    markCompleted(uploadId)
                     if (expectedSha != null) call.response.header(HEADER_SHA256, expectedSha)
                     call.respond(HttpStatusCode.OK)
                 } else call.respond(HttpStatusCode.BadRequest, "No file body received")
@@ -466,6 +525,9 @@ class KtorFileReceiver(
 
         /** Ventana de aprobación: "Más tarde" mantiene la conexión hasta 2 minutos. */
         const val APPROVAL_WINDOW_MS = 120_000L
+
+        /** Cuánto tiempo un uploadId completado recuerda serlo (éxito idempotente). */
+        const val COMPLETED_TTL_MS = 5 * 60_000L
         const val HEADER_PIN = "X-Ignite-Pin"
         const val HEADER_SHA256 = "X-Ignite-Sha256"
         const val HEADER_OFFSET = "X-Ignite-Offset"

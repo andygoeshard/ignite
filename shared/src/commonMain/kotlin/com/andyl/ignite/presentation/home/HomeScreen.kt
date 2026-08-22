@@ -5,6 +5,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -32,7 +34,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
@@ -49,7 +50,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -77,9 +78,14 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.andyl.ignite.domain.model.Device
@@ -164,97 +170,344 @@ fun HomeScreen(
             }
 
             if (!scrollable) {
-                // Modo fijo: las columnas reparten la altura disponible y las listas flexan
+                // Modo fijo: las columnas reparten la altura disponible y las listas flexan.
+                // Jerarquía: transmisión al centro/frente, dispositivos como panel secundario.
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.fillMaxWidth().weight(1f),
                 ) {
                     if (expanded) {
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            PinCard(
-                                myPin = state.myPin,
-                                onRegenerate = { onEvent(HomeEvent.OnRegeneratePin) },
-                                onToggleDialog = { onEvent(HomeEvent.OnTogglePinDialog) },
-                            )
-                            DevicesSection(state, onEvent, focusManualIp = true, reduceMotion = reduceMotion, flexList = true)
-                        }
-                        SendSection(state, onEvent, onPickFile, Modifier.weight(1.15f), reduceMotion)
+                        DevicesCard(
+                            state = state,
+                            onEvent = onEvent,
+                            focusManualIp = true,
+                            flexList = true,
+                            modifier = Modifier.weight(1f),
+                        )
+                        TransferCard(
+                            state = state,
+                            onEvent = onEvent,
+                            onPickFile = onPickFile,
+                            reduceMotion = reduceMotion,
+                            modifier = Modifier.weight(1.15f),
+                        )
                         ReceiveSection(state, onEvent, Modifier.weight(1f))
                     } else {
+                        DevicesCard(
+                            state = state,
+                            onEvent = onEvent,
+                            focusManualIp = true,
+                            flexList = true,
+                            modifier = Modifier.weight(1f),
+                        )
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            PinCard(
-                                myPin = state.myPin,
-                                onRegenerate = { onEvent(HomeEvent.OnRegeneratePin) },
-                                onToggleDialog = { onEvent(HomeEvent.OnTogglePinDialog) },
+                            TransferCard(
+                                state = state,
+                                onEvent = onEvent,
+                                onPickFile = onPickFile,
+                                reduceMotion = reduceMotion,
+                                modifier = Modifier.fillMaxWidth(),
                             )
-                            DevicesSection(state, onEvent, focusManualIp = true, reduceMotion = reduceMotion, flexList = true)
-                        }
-                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            SendSection(state, onEvent, onPickFile, Modifier.fillMaxWidth(), reduceMotion)
                             Spacer(Modifier.weight(1f))
                             ReceiveSection(state, onEvent, Modifier.fillMaxWidth())
                         }
                     }
                 }
             } else {
-                // Compacto (<720dp): una columna con scroll; el radar es decorativo y se omite
-                PinCard(
-                    myPin = state.myPin,
-                    onRegenerate = { onEvent(HomeEvent.OnRegeneratePin) },
-                    onToggleDialog = { onEvent(HomeEvent.OnTogglePinDialog) },
+                // Compacto (<720dp): columna con scroll; lo importante primero:
+                // la zona de transmisión encabeza la pantalla, los dispositivos van después.
+                TransferCard(
+                    state = state,
+                    onEvent = onEvent,
+                    onPickFile = onPickFile,
+                    reduceMotion = reduceMotion,
+                    modifier = Modifier.fillMaxWidth(),
                 )
-                DevicesSection(state, onEvent, Modifier.fillMaxWidth(), reduceMotion = reduceMotion, showRadar = false)
-                SendSection(state, onEvent, onPickFile, Modifier.fillMaxWidth(), reduceMotion)
+                DevicesCard(
+                    state = state,
+                    onEvent = onEvent,
+                    focusManualIp = false,
+                    flexList = false,
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 ReceiveSection(state, onEvent, Modifier.fillMaxWidth())
             }
         }
     }
 }
 
+/**
+ * Panel secundario de dispositivos: lista compacta, conexión manual inline y
+ * el propio PIN como chip en la cabecera. Sin radar: lo decorativo compite
+ * con lo importante.
+ */
 @Composable
-private fun DevicesSection(
+private fun DevicesCard(
     state: HomeState,
     onEvent: (HomeEvent) -> Unit,
     modifier: Modifier = Modifier,
     focusManualIp: Boolean = false,
-    reduceMotion: Boolean = false,
-    /** En modo fijo, la lista de dispositivos ocupa la altura restante. */
+    /** En modo fijo, la lista ocupa la altura restante. */
     flexList: Boolean = false,
-    /** El radar es decorativo: en compacto se omite para ganar espacio. */
-    showRadar: Boolean = true,
 ) {
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        RadarCard(
-            devices = state.devices,
-            selected = state.selectedDevice,
-            isScanning = state.isScanning,
-            error = state.error,
-            trustedIds = state.trustedIds,
-            reduceMotion = reduceMotion,
-            showRadar = showRadar,
-            flexList = flexList,
-            onSelect = { onEvent(HomeEvent.OnDeviceSelected(it)) },
-            onRetry = { onEvent(HomeEvent.OnRefresh) },
-            onForget = { onEvent(HomeEvent.OnForgetDevice(it.id, it.name)) },
-        )
-        ManualConnectCard(
-            manualIp = state.manualIp,
-            onIpChanged = { onEvent(HomeEvent.OnManualIpChanged(it)) },
+    NeoCard(
+        modifier = modifier,
+        container = MaterialTheme.colorScheme.surfaceContainerLow,
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+    ) {
+        // Cabecera: etiqueta + spinner + mi PIN como chip regenerable
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionLabel("Dispositivos")
+            Spacer(Modifier.width(6.dp))
+            if (state.isScanning) {
+                CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.5.dp)
+            }
+            Spacer(Modifier.weight(1f))
+            Surface(
+                shape = MaterialTheme.shapes.extraSmall,
+                color = Color.Transparent,
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(start = 8.dp),
+                ) {
+                    Text(
+                        text = "PIN ${state.myPin.ifBlank { "------" }}",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    IconButton(
+                        onClick = { onEvent(HomeEvent.OnRegeneratePin) },
+                        modifier = Modifier.size(28.dp),
+                    ) {
+                        Icon(
+                            Icons.Default.Refresh,
+                            contentDescription = "Regenerar PIN",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(14.dp),
+                        )
+                    }
+                }
+            }
+        }
+
+        // Contrato tri-state (#32): lista / ERROR+acción / LOADING / EMPTY+acción
+        when {
+            state.devices.isNotEmpty() -> {
+                val listModifier =
+                    if (flexList) Modifier.weight(1f) else Modifier.heightIn(min = 96.dp)
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = listModifier.fillMaxWidth(),
+                ) {
+                    items(state.devices, key = { it.id }) { device ->
+                        DeviceRow(
+                            device = device,
+                            isSelected = device.id == state.selectedDevice?.id,
+                            isTrusted = device.id in state.trustedIds,
+                            onClick = { onEvent(HomeEvent.OnDeviceSelected(device)) },
+                            onForget = { onEvent(HomeEvent.OnForgetDevice(device.id, device.name)) },
+                        )
+                    }
+                }
+            }
+            state.error != null -> CompactMessage(
+                text = state.error,
+                actionText = "Reintentar",
+                onAction = { onEvent(HomeEvent.OnRefresh) },
+                isError = true,
+            )
+            else -> CompactMessage(
+                text = if (state.isScanning) {
+                    "Buscando dispositivos en tu red…"
+                } else {
+                    "No se encontró nadie. Abrí Ignite en la otra máquina o conectá por IP."
+                },
+                actionText = if (state.isScanning) null else "Buscar de nuevo",
+                onAction = if (state.isScanning) null else ({ onEvent(HomeEvent.OnRefresh) }),
+                isError = false,
+            )
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+        ManualIpRow(
+            value = state.manualIp,
+            onValueChange = { onEvent(HomeEvent.OnManualIpChanged(it)) },
             onConnect = { onEvent(HomeEvent.OnManualConnect) },
             requestFocus = focusManualIp,
         )
     }
 }
 
+/** Mensaje compacto del tri-state con acción opcional. */
 @Composable
-private fun SendSection(
+private fun CompactMessage(
+    text: String,
+    actionText: String?,
+    onAction: (() -> Unit)?,
+    isError: Boolean,
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier.padding(vertical = 8.dp).fillMaxWidth(),
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (actionText != null && onAction != null) {
+            TextButton(
+                onClick = onAction,
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp),
+            ) {
+                Text(actionText, style = MaterialTheme.typography.labelLarge)
+            }
+        }
+    }
+}
+
+/** Conexión manual inline: IP + Conectar, Enter dispara. */
+@Composable
+private fun ManualIpRow(
+    value: String,
+    onValueChange: (String) -> Unit,
+    onConnect: () -> Unit,
+    requestFocus: Boolean = false,
+) {
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        if (requestFocus) runCatching { focusRequester.requestFocus() }
+    }
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = { Text("Conectar por IP") },
+            placeholder = { Text("192.168.x.x") },
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+            modifier = Modifier
+                .weight(1f)
+                .focusRequester(focusRequester)
+                .onPreviewKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyDown && event.key == Key.Enter) {
+                        onConnect()
+                        true
+                    } else {
+                        false
+                    }
+                },
+        )
+        TextButton(onClick = onConnect, enabled = value.isNotBlank()) {
+            Text("Conectar")
+        }
+    }
+}
+
+/**
+ * Card héroe de transmisión: el estado de la sesión arriba (archivo + barra
+ * neón), cola compacta, PIN destino y acciones. Un solo vistazo dice todo.
+ */
+@Composable
+private fun TransferCard(
     state: HomeState,
     onEvent: (HomeEvent) -> Unit,
     onPickFile: () -> Unit,
     modifier: Modifier = Modifier,
     reduceMotion: Boolean = false,
 ) {
-    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    val active = state.sendSession !is SendSession.Idle
+
+    NeoCard(
+        modifier = modifier,
+        container = MaterialTheme.colorScheme.surfaceContainer,
+    ) {
+        // Cabecera: etiqueta + chip de estado + cancelar cuando corresponde
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionLabel("Transmisión")
+            Spacer(Modifier.width(8.dp))
+            StatusChip(
+                text = when (val s = state.sendSession) {
+                    is SendSession.Preparing -> "Preparando"
+                    is SendSession.Sending -> "Enviando"
+                    is SendSession.Cancelling -> "Cancelando"
+                    SendSession.Idle -> when {
+                        state.sendOutcome?.success == true -> "Completo"
+                        state.sendOutcome?.cancelled == true -> "Cancelado"
+                        state.sendOutcome != null -> "Error"
+                        else -> "Listo"
+                    }
+                },
+                color = when {
+                    state.sendSession is SendSession.Cancelling -> MaterialTheme.colorScheme.error
+                    state.sendOutcome != null && !state.sendOutcome.success && !state.sendOutcome.cancelled ->
+                        MaterialTheme.colorScheme.error
+                    active || state.sendOutcome?.success == true -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+            Spacer(Modifier.weight(1f))
+            if (state.sendSession is SendSession.Sending || state.sendSession is SendSession.Preparing) {
+                TextButton(onClick = { onEvent(HomeEvent.OnCancelSend) }) {
+                    Text("Cancelar")
+                }
+            }
+        }
+
+        // Zona héroe: fase de sesión animada (#24); con reduce-motion sólo fade (#30)
+        val phase = when (val s = state.sendSession) {
+            is SendSession.Preparing -> 1
+            is SendSession.Sending -> 2
+            is SendSession.Cancelling -> 3
+            SendSession.Idle -> if (state.sendOutcome != null) 4 else 0
+        }
+        AnimatedContent(
+            targetState = phase,
+            transitionSpec = {
+                if (reduceMotion) {
+                    fadeIn(tween(150)) togetherWith fadeOut(tween(90))
+                } else {
+                    (fadeIn(tween(150)) + slideInVertically(tween(150)) { it / 8 }) togetherWith fadeOut(tween(90))
+                }
+            },
+            label = "send-hero",
+            modifier = Modifier.fillMaxWidth(),
+        ) { _ ->
+            when (val session = state.sendSession) {
+                is SendSession.Sending -> HeroProgress(session, isCancelling = false)
+                is SendSession.Cancelling -> HeroProgress(session.of, isCancelling = true)
+                is SendSession.Preparing -> HeroPreparing(session.targetName)
+                SendSession.Idle -> state.sendOutcome?.let { SendOutcomeRow(it) } ?: HeroIdle()
+            }
+        }
+
+        // Cola compacta (sólo cuando no hay envío activo ocupando la zona héroe)
+        if (state.pendingFiles.isNotEmpty() && !active) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                state.pendingFiles.forEach { file ->
+                    QueueRow(file = file, onClear = { onEvent(HomeEvent.OnFileCleared(file)) })
+                }
+                if (state.pendingFiles.size > 1) {
+                    Text(
+                        text = "${state.pendingFiles.size} archivos · ${formatSize(state.pendingFiles.sumOf { it.sizeBytes })} en total",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+        }
+
+        // PIN del receptor + pista de PIN recordado
         if (state.selectedDevice != null) {
             OutlinedTextField(
                 value = state.targetPin,
@@ -262,6 +515,7 @@ private fun SendSection(
                 label = { Text("PIN del receptor (6 dígitos)") },
                 placeholder = { Text("Ej: ${state.myPin}") },
                 singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
                 modifier = Modifier.fillMaxWidth(),
             )
             if (state.targetPin.isNotEmpty() && state.targetPin.length != 6) {
@@ -270,41 +524,168 @@ private fun SendSection(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error,
                 )
+            } else if (state.pinRememberedFor == state.selectedDevice.name) {
+                Text(
+                    "Usando el PIN recordado de ${state.selectedDevice.name}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
             }
         }
 
-        if (state.pendingFiles.isNotEmpty()) {
-            FileQueue(
-                files = state.pendingFiles,
-                onClear = { onEvent(HomeEvent.OnFileCleared(it)) },
+        // Acciones
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            OutlinedButton(
+                onClick = onPickFile,
+                enabled = !active,
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(if (state.pendingFiles.isEmpty()) "Agregar archivo" else "Agregar otro")
+            }
+            Button(
+                onClick = { onEvent(HomeEvent.OnSendClick) },
+                enabled = state.canSend,
+                modifier = Modifier.weight(1.4f),
+            ) {
+                Text(
+                    when {
+                        state.sendSession is SendSession.Preparing -> "Preparando…"
+                        state.sendSession is SendSession.Cancelling -> "Cancelando…"
+                        state.sendSession is SendSession.Sending -> "Enviando…"
+                        state.selectedDevice == null -> "Elegí un dispositivo"
+                        state.pendingFiles.isEmpty() -> "Seleccioná un archivo"
+                        state.targetPin.length != 6 -> "Ingresá el PIN"
+                        else -> "Enviar a ${state.selectedDevice.name}"
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/** Zona héroe durante un envío: archivo grande + barra neón + bytes. */
+@Composable
+private fun HeroProgress(session: SendSession.Sending, isCancelling: Boolean) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = session.fileName.ifBlank { "Preparando…" },
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = buildString {
+                append("a ${session.targetName}")
+                if (session.fileCount > 1) append(" · archivo ${session.fileIndex + 1} de ${session.fileCount}")
+            },
+            style = MaterialTheme.typography.labelMedium,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        val preparing = session.fileTotalBytes <= 0L
+        NeonProgressBar(
+            progress = if (preparing) 0.04f else session.fileProgress,
+            height = 14.dp,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "${formatSize(session.fileSentBytes)} / ${formatSize(session.fileTotalBytes)}",
+                style = MaterialTheme.typography.labelMedium,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.weight(1f))
+            Text(
+                text = "${(session.fileProgress * 100).toInt()}%",
+                style = MaterialTheme.typography.titleSmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.primary,
             )
         }
-
-        SessionArea(state, onEvent, reduceMotion = reduceMotion)
-
-        OutlinedButton(
-            onClick = onPickFile,
-            enabled = !state.isSendActive,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(if (state.pendingFiles.isEmpty()) "Seleccionar archivo" else "Agregar otro archivo")
-        }
-
-        Button(
-            onClick = { onEvent(HomeEvent.OnSendClick) },
-            enabled = state.canSend,
-            modifier = Modifier.fillMaxWidth(),
-        ) {
+        if (session.fileCount > 1) {
+            NeonProgressBar(progress = session.globalProgress, height = 6.dp)
             Text(
-                when {
-                    state.sendSession is SendSession.Preparing -> "Preparando…"
-                    state.sendSession is SendSession.Cancelling -> "Cancelando…"
-                    state.sendSession is SendSession.Sending -> "Enviando…"
-                    state.selectedDevice == null -> "Elegí un dispositivo de la lista"
-                    state.pendingFiles.isEmpty() -> "Seleccioná un archivo para enviar"
-                    state.targetPin.length != 6 -> "Ingresá el PIN de 6 dígitos"
-                    else -> "Enviar a ${state.selectedDevice.name}"
-                },
+                text = "Total: ${formatSize(session.globalSentBytes)} de ${formatSize(session.totalBytes)}",
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (isCancelling) {
+            Text(
+                "Cancelando…",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
+@Composable
+private fun HeroPreparing(targetName: String) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+    ) {
+        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+        Text(
+            text = "Preparando envío a $targetName…",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+    }
+}
+
+@Composable
+private fun HeroIdle() {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.padding(vertical = 8.dp)) {
+        Text(
+            text = "Listo para transmitir.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            text = "Agregá archivos y elegí un destino.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** Fila compacta de la cola de archivos a enviar. */
+@Composable
+private fun QueueRow(file: PendingFile, onClear: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+    ) {
+        Icon(
+            Icons.Default.Description,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = file.name,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = formatSize(file.sizeBytes),
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        IconButton(onClick = onClear, modifier = Modifier.size(26.dp)) {
+            Icon(
+                Icons.Default.Close,
+                contentDescription = "Quitar ${file.name}",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp),
             )
         }
     }
@@ -328,65 +709,110 @@ private fun ReceiveSection(
     }
 }
 
+/** Card base del look cyberpunk: panel oscuro, borde tenue, esquinas cortadas. */
+@Composable
+private fun NeoCard(
+    modifier: Modifier = Modifier,
+    container: Color = MaterialTheme.colorScheme.surfaceContainer,
+    contentPadding: androidx.compose.foundation.layout.PaddingValues =
+        androidx.compose.foundation.layout.PaddingValues(16.dp),
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        color = container,
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(contentPadding),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            content = content,
+        )
+    }
+}
+
+/** Etiqueta de sección: mono, mayúsculas, tracking amplio. */
+@Composable
+private fun SectionLabel(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text = text.uppercase(),
+        style = MaterialTheme.typography.labelMedium,
+        fontFamily = FontFamily.Monospace,
+        letterSpacing = 2.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = modifier,
+    )
+}
+
+/** Chip de estado: cut-corner, texto mono en mayúsculas. */
+@Composable
+private fun StatusChip(text: String, color: Color) {
+    Surface(
+        shape = MaterialTheme.shapes.extraSmall,
+        color = color.copy(alpha = 0.12f),
+        border = androidx.compose.foundation.BorderStroke(1.dp, color.copy(alpha = 0.45f)),
+    ) {
+        Text(
+            text = text.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = FontFamily.Monospace,
+            color = color,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+        )
+    }
+}
+
 /**
- * Zona de estado del envío (#24): anima transiciones entre fases sin
- * animar cada tick de progreso (la clave es la fase, no la sesión).
+ * Barra de progreso neón: track oscuro, relleno degradado verde→cian y una
+ * banda de brillo que recorre la parte llena mientras transfiere.
  */
 @Composable
-private fun SessionArea(
-    state: HomeState,
-    onEvent: (HomeEvent) -> Unit,
+private fun NeonProgressBar(
+    progress: Float,
     modifier: Modifier = Modifier,
-    reduceMotion: Boolean = false,
+    height: Dp = 12.dp,
 ) {
-    val phase = when (val s = state.sendSession) {
-        is SendSession.Preparing -> 1
-        is SendSession.Sending -> 2
-        is SendSession.Cancelling -> 3
-        SendSession.Idle -> if (state.sendOutcome != null) 4 else 0
-    }
-    AnimatedContent(
-        targetState = phase,
-        transitionSpec = {
-            // #30: con movimiento reducido, sólo fade
-            if (reduceMotion) {
-                fadeIn(tween(150)) togetherWith fadeOut(tween(90))
-            } else {
-                (fadeIn(tween(150)) + slideInVertically(tween(150)) { it / 8 }) togetherWith fadeOut(tween(90))
-            }
-        },
-        label = "send-session",
-        modifier = modifier,
-    ) { _ ->
-        when (val session = state.sendSession) {
-            is SendSession.Sending -> ProgressCard(
-                session = session,
-                isCancelling = false,
-                onCancel = { onEvent(HomeEvent.OnCancelSend) },
-            )
-            is SendSession.Cancelling -> ProgressCard(
-                session = session.of,
-                isCancelling = true,
-                onCancel = { },
-            )
-            is SendSession.Preparing -> ProgressCard(
-                session = SendSession.Sending(
-                    targetName = session.targetName,
-                    fileIndex = 0,
-                    fileCount = session.fileCount,
-                    fileName = "",
-                    fileProgress = 0f,
-                    fileSentBytes = 0L,
-                    fileTotalBytes = 0L,
-                    completedBytesBeforeCurrent = 0L,
-                    totalBytes = session.totalBytes,
-                ),
-                isCancelling = false,
-                onCancel = { onEvent(HomeEvent.OnCancelSend) },
-                titleOverride = "Preparando envío a ${session.targetName}…",
-            )
-            SendSession.Idle -> state.sendOutcome?.let { outcome ->
-                SendOutcomeRow(outcome)
+    val track = MaterialTheme.colorScheme.surfaceContainerHighest
+    val outline = MaterialTheme.colorScheme.outlineVariant
+    val fillStart = MaterialTheme.colorScheme.primary
+    val fillEnd = MaterialTheme.colorScheme.tertiary
+    val animated by animateFloatAsState(
+        targetValue = progress.coerceIn(0f, 1f),
+        animationSpec = tween(240),
+        label = "neon-fill",
+    )
+    val sweep by rememberInfiniteTransition(label = "neon-sweep").animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1500, easing = LinearEasing)),
+        label = "sweep-pos",
+    )
+    Canvas(modifier.fillMaxWidth().height(height)) {
+        val r = CornerRadius(size.height / 2f, size.height / 2f)
+        drawRoundRect(color = track, cornerRadius = r)
+        drawRoundRect(color = outline, cornerRadius = r, style = Stroke(width = 1.dp.toPx()))
+        val fillW = size.width * animated
+        if (fillW > size.height / 2f) {
+            clipRect(right = fillW) {
+                drawRoundRect(
+                    brush = Brush.horizontalGradient(listOf(fillStart, fillEnd)),
+                    cornerRadius = r,
+                    size = androidx.compose.ui.geometry.Size(fillW, this.size.height),
+                )
+                if (animated < 0.999f) {
+                    val bandX = sweep * this.size.width
+                    drawLine(
+                        brush = Brush.horizontalGradient(
+                            colors = listOf(Color.Transparent, Color.White.copy(alpha = 0.40f), Color.Transparent),
+                            startX = bandX - this.size.width * 0.05f,
+                            endX = bandX + this.size.width * 0.05f,
+                        ),
+                        start = Offset(bandX, 2f),
+                        end = Offset(bandX, this.size.height - 2f),
+                        strokeWidth = 6f,
+                    )
+                }
             }
         }
     }
@@ -446,100 +872,6 @@ private fun Header(
 }
 
 @Composable
-private fun RadarCard(
-    devices: List<Device>,
-    selected: Device?,
-    isScanning: Boolean,
-    error: String?,
-    trustedIds: Set<String>,
-    reduceMotion: Boolean,
-    showRadar: Boolean,
-    flexList: Boolean,
-    onSelect: (Device) -> Unit,
-    onRetry: () -> Unit,
-    onForget: (Device) -> Unit,
-) {
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val title = if (devices.isEmpty()) "Dispositivos" else "Dispositivos (${devices.size})"
-                Text(title, style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.width(8.dp))
-                if (isScanning) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                    )
-                }
-            }
-            if (showRadar) {
-                Spacer(Modifier.height(12.dp))
-                RadarGraph(devices, pulse = isScanning && !reduceMotion)
-            } else {
-                Spacer(Modifier.height(8.dp))
-            }
-
-            // Contrato tri-state (#32): LOADING / EMPTY / ERROR con acción
-            if (devices.isNotEmpty()) {
-                val listModifier = if (flexList) Modifier.weight(1f) else Modifier.heightIn(min = 120.dp, max = 260.dp)
-                LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                    modifier = listModifier.fillMaxWidth(),
-                ) {
-                    items(devices, key = { it.id }) { device ->
-                        DeviceRow(
-                            device = device,
-                            isSelected = device.id == selected?.id,
-                            isTrusted = device.id in trustedIds,
-                            onClick = { onSelect(device) },
-                            onForget = { onForget(device) },
-                        )
-                    }
-                }
-            } else {
-                Column(modifier = Modifier.padding(top = 12.dp)) {
-                    when {
-                        error != null -> {
-                            Text(
-                                text = "No se pudo buscar dispositivos: $error",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.error,
-                            )
-                            TextButton(onClick = onRetry) { Text("Reintentar") }
-                        }
-                        isScanning -> {
-                            Text(
-                                text = "Buscando dispositivos en la red local…",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Text(
-                                text = "Tip: ambos dispositivos tienen que estar en la misma red Wi-Fi y con la app abierta.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 4.dp),
-                            )
-                        }
-                        else -> {
-                            Text(
-                                text = "No hay dispositivos. Tocá ↻ para buscar de nuevo.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            TextButton(onClick = onRetry) { Text("Buscar de nuevo") }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun DeviceRow(
     device: Device,
     isSelected: Boolean,
@@ -552,7 +884,7 @@ private fun DeviceRow(
     val haptic = LocalHapticFeedback.current
 
     Surface(
-        shape = RoundedCornerShape(12.dp),
+        shape = MaterialTheme.shapes.medium,
         color = if (isSelected) MaterialTheme.colorScheme.primaryContainer
         else MaterialTheme.colorScheme.surface,
         border = androidx.compose.foundation.BorderStroke(1.dp, border),
@@ -610,136 +942,12 @@ private fun DeviceRow(
 }
 
 @Composable
-private fun RadarGraph(devices: List<Device>, pulse: Boolean = false) {
-    val primary = MaterialTheme.colorScheme.primary
-    val tertiary = MaterialTheme.colorScheme.tertiary
-    // #30: pulso sutil sólo mientras escanea y si el sistema no pidió reducir movimiento
-    val pulseAlpha by rememberInfiniteTransition(label = "radar-pulse").animateFloat(
-        initialValue = 0.12f,
-        targetValue = 0.32f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1400, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "radar-pulse-alpha",
-    )
-    val ringAlpha = if (pulse) pulseAlpha else 0.2f
-    // #29: el radar es decorativo; la info real vive en el título y la lista
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(120.dp)
-            .semantics {
-                contentDescription = "Radar: ${devices.size} ${if (devices.size == 1) "dispositivo" else "dispositivos"} detectado${if (devices.size == 1) "" else "s"}"
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val sizePx = min(size.width, size.height)
-            val center = Offset(size.width / 2, size.height / 2)
-            val maxR = sizePx / 2f
-
-            val ringColor = primary.copy(alpha = ringAlpha)
-            for (i in 1..3) {
-                drawCircle(
-                    color = ringColor,
-                    radius = maxR * i / 3f,
-                    center = center,
-                    style = Stroke(width = 2f),
-                )
-            }
-
-            val n = devices.size
-            devices.forEachIndexed { index, _ ->
-                val angle = (index.toDouble() / n.toDouble()) * Math.PI * 2
-                val radius = maxR * 0.5f
-                val blip = Offset(
-                    center.x + (Math.cos(angle).toFloat() * radius),
-                    center.y + (Math.sin(angle).toFloat() * radius),
-                )
-                drawCircle(
-                    color = tertiary,
-                    radius = 10f,
-                    center = blip,
-                )
-                drawCircle(
-                    color = tertiary.copy(alpha = 0.3f),
-                    radius = 16f,
-                    center = blip,
-                    style = Stroke(width = 2f, cap = StrokeCap.Round),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun FileQueue(
-    files: List<PendingFile>,
-    onClear: (PendingFile) -> Unit,
-) {
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text("Archivos a enviar", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
-            files.forEach { file ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        Icons.Default.Description,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = file.name,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.weight(1f),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        text = formatSize(file.sizeBytes),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    IconButton(onClick = { onClear(file) }, modifier = Modifier.size(28.dp)) {
-                        Text(
-                            "✕",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-            if (files.size > 1) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = "${files.size} archivos · ${formatSize(files.sumOf { it.sizeBytes })} en total",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-        }
-    }
-}
-
-@Composable
 private fun RecentReceivedCard(
     files: List<ReceivedFileUi>,
     onOpenFolder: (ReceivedFileUi) -> Unit,
 ) {
     Surface(
-        shape = RoundedCornerShape(16.dp),
+        shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.secondaryContainer,
         modifier = Modifier.fillMaxWidth(),
     ) {
@@ -790,156 +998,6 @@ private fun RecentReceivedCard(
     }
 }
 
-@Composable
-private fun ProgressCard(
-    session: SendSession.Sending,
-    isCancelling: Boolean,
-    onCancel: () -> Unit,
-    titleOverride: String? = null,
-) {
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.primaryContainer,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                text = titleOverride ?: if (session.fileCount > 1) {
-                    "Enviando archivo ${session.fileIndex + 1} de ${session.fileCount} a ${session.targetName}"
-                } else {
-                    "Enviando «${session.fileName}» a ${session.targetName}"
-                },
-                style = MaterialTheme.typography.titleSmall,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(8.dp))
-            val preparing = session.fileTotalBytes <= 0L
-            if (preparing) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            } else {
-                if (session.fileCount > 1) {
-                    Text(
-                        text = "${session.fileName} · ${formatSize(session.fileSentBytes)} de ${formatSize(session.fileTotalBytes)} · ${(session.fileProgress * 100).toInt()}%",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                } else {
-                    Text(
-                        text = "${formatSize(session.fileSentBytes)} de ${formatSize(session.fileTotalBytes)}",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                Spacer(Modifier.height(2.dp))
-                LinearProgressIndicator(
-                    progress = { session.fileProgress.coerceIn(0f, 1f) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                if (session.fileCount > 1) {
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = "Total: ${formatSize(session.globalSentBytes)} de ${formatSize(session.totalBytes)} · ${(session.globalProgress * 100).toInt()}%",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    )
-                    Spacer(Modifier.height(2.dp))
-                    LinearProgressIndicator(
-                        progress = { session.globalProgress.coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-            }
-            Spacer(Modifier.height(12.dp))
-            OutlinedButton(
-                onClick = onCancel,
-                enabled = !isCancelling,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(if (isCancelling) "Cancelando…" else "Cancelar")
-            }
-        }
-    }
-}
-
-@Composable
-private fun PinCard(myPin: String, onRegenerate: () -> Unit, onToggleDialog: () -> Unit) {
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.tertiaryContainer,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Tu PIN de emparejamiento", style = MaterialTheme.typography.labelMedium)
-                Text(
-                    myPin.ifBlank { "------" },
-                    style = MaterialTheme.typography.headlineMedium,
-                    letterSpacing = 8.sp,
-                )
-                Text(
-                    "Compartí este código con quien te envía. Valida el header X-Ignite-Pin.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onTertiaryContainer,
-                )
-            }
-            IconButton(onClick = onRegenerate) {
-                Icon(Icons.Default.Refresh, contentDescription = "Regenerar PIN")
-            }
-        }
-    }
-}
-
-@Composable
-private fun ManualConnectCard(
-    manualIp: String,
-    onIpChanged: (String) -> Unit,
-    onConnect: () -> Unit,
-    requestFocus: Boolean = false,
-) {
-    val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        if (requestFocus) runCatching { focusRequester.requestFocus() }
-    }
-    Surface(
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Conexión manual (si no se ven)", style = MaterialTheme.typography.titleSmall)
-            Text(
-                "Si Mac no ve a Windows (firewall/VLAN), ingresá la IP del otro. En Windows: ipconfig → IPv4. En Mac: ifconfig | grep inet",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                OutlinedTextField(
-                    value = manualIp,
-                    onValueChange = onIpChanged,
-                    label = { Text("IP del otro") },
-                    placeholder = { Text("192.168.1.10") },
-                    singleLine = true,
-                    modifier = Modifier
-                        .weight(1f)
-                        .focusRequester(focusRequester)
-                        .onPreviewKeyEvent { e ->
-                            if ((e.key == Key.Enter || e.key == Key.NumPadEnter) && e.type == KeyEventType.KeyUp && manualIp.isNotBlank()) {
-                                onConnect()
-                                true
-                            } else {
-                                false
-                            }
-                        },
-                )
-                Button(onClick = onConnect, enabled = manualIp.isNotBlank()) { Text("Conectar") }
-            }
-        }
-    }
-}
-
 /**
  * Tarjeta de progreso de recepción (#7): no modal, descartable. La
  * aprobación vive en el diálogo de HomeEntry / banner "Más tarde".
@@ -947,7 +1005,7 @@ private fun ManualConnectCard(
 @Composable
 private fun IncomingCard(incoming: IncomingUi.Receiving) {
     Surface(
-        shape = RoundedCornerShape(16.dp),
+        shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.secondaryContainer,
         modifier = Modifier.fillMaxWidth(),
     ) {
@@ -966,8 +1024,9 @@ private fun IncomingCard(incoming: IncomingUi.Receiving) {
                 color = MaterialTheme.colorScheme.onSecondaryContainer,
             )
             Spacer(Modifier.height(8.dp))
-            LinearProgressIndicator(
-                progress = { incoming.progress.coerceIn(0f, 1f) },
+            NeonProgressBar(
+                progress = incoming.progress,
+                height = 8.dp,
                 modifier = Modifier.fillMaxWidth(),
             )
         }
@@ -994,7 +1053,7 @@ private fun DeferredApprovalBanner(
         }
     }
     Surface(
-        shape = RoundedCornerShape(16.dp),
+        shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.tertiaryContainer,
         modifier = Modifier.fillMaxWidth(),
     ) {
@@ -1066,7 +1125,7 @@ private fun InterruptedBanner(
     onOpenHistory: () -> Unit,
 ) {
     Surface(
-        shape = RoundedCornerShape(16.dp),
+        shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.errorContainer,
         modifier = Modifier.fillMaxWidth(),
     ) {
