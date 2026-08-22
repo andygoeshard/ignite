@@ -41,7 +41,9 @@ import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -58,6 +60,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -81,6 +84,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.andyl.ignite.domain.model.Device
 import com.andyl.ignite.presentation.format.formatSize
+import kotlinx.coroutines.delay
 import kotlin.math.min
 
 @Composable
@@ -115,13 +119,15 @@ fun HomeScreen(
     BoxWithConstraints(modifier = modifier.fillMaxSize()) {
         val compact = maxWidth < 720.dp
         val expanded = maxWidth >= 1200.dp
+        // Sin scrolling en mediano/expandido; compacto o ventana muy baja scrollean
+        val scrollable = compact || maxHeight < 460.dp
         // #30: una sola lectura por composición; desactiva spins/pulsos/slides
         val reduceMotion = remember { com.andyl.ignite.data.isReduceMotionEnabled() }
 
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .then(if (scrollable) Modifier.verticalScroll(rememberScrollState()) else Modifier)
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -141,64 +147,65 @@ fun HomeScreen(
                 )
             }
 
-            // Recepción unificada (#7): la aprobación queda siempre arriba y visible
+            // La aprobación modal vive en HomeEntry (diálogo). Acá queda:
+            // - "Más tarde" → banner no modal con cuenta atrás
+            // - Recepción en curso → tarjeta de progreso
             state.incoming?.let { incoming ->
-                IncomingCard(
-                    incoming = incoming,
-                    onApprove = { onEvent(HomeEvent.OnApproveIncoming) },
-                    onReject = { onEvent(HomeEvent.OnRejectIncoming) },
-                    onDismiss = { onEvent(HomeEvent.OnDismissIncoming) },
-                )
+                when (incoming) {
+                    is IncomingUi.AwaitingApproval -> if (incoming.deferred) {
+                        DeferredApprovalBanner(
+                            approval = incoming,
+                            onApprove = { onEvent(HomeEvent.OnApproveIncoming) },
+                            onReject = { onEvent(HomeEvent.OnRejectIncoming) },
+                        )
+                    }
+                    is IncomingUi.Receiving -> IncomingCard(incoming)
+                }
             }
 
-            when {
-                // Expandido (≥1200dp): dispositivos | envío | recibidos
-                expanded -> Row(
+            if (!scrollable) {
+                // Modo fijo: las columnas reparten la altura disponible y las listas flexan
+                Row(
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().weight(1f),
                 ) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        PinCard(
-                            myPin = state.myPin,
-                            onRegenerate = { onEvent(HomeEvent.OnRegeneratePin) },
-                            onToggleDialog = { onEvent(HomeEvent.OnTogglePinDialog) },
-                        )
-                        DevicesSection(state, onEvent, focusManualIp = true, reduceMotion = reduceMotion)
-                    }
-                    SendSection(state, onEvent, onPickFile, Modifier.weight(1f), reduceMotion)
-                    ReceiveSection(state, onEvent, Modifier.weight(1f))
-                }
-
-                // Mediano (720–1199dp): dos columnas
-                !compact -> Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        PinCard(
-                            myPin = state.myPin,
-                            onRegenerate = { onEvent(HomeEvent.OnRegeneratePin) },
-                            onToggleDialog = { onEvent(HomeEvent.OnTogglePinDialog) },
-                        )
-                        DevicesSection(state, onEvent, focusManualIp = true, reduceMotion = reduceMotion)
-                    }
-                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        SendSection(state, onEvent, onPickFile, Modifier.fillMaxWidth(), reduceMotion)
-                        ReceiveSection(state, onEvent, Modifier.fillMaxWidth())
+                    if (expanded) {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            PinCard(
+                                myPin = state.myPin,
+                                onRegenerate = { onEvent(HomeEvent.OnRegeneratePin) },
+                                onToggleDialog = { onEvent(HomeEvent.OnTogglePinDialog) },
+                            )
+                            DevicesSection(state, onEvent, focusManualIp = true, reduceMotion = reduceMotion, flexList = true)
+                        }
+                        SendSection(state, onEvent, onPickFile, Modifier.weight(1.15f), reduceMotion)
+                        ReceiveSection(state, onEvent, Modifier.weight(1f))
+                    } else {
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            PinCard(
+                                myPin = state.myPin,
+                                onRegenerate = { onEvent(HomeEvent.OnRegeneratePin) },
+                                onToggleDialog = { onEvent(HomeEvent.OnTogglePinDialog) },
+                            )
+                            DevicesSection(state, onEvent, focusManualIp = true, reduceMotion = reduceMotion, flexList = true)
+                        }
+                        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            SendSection(state, onEvent, onPickFile, Modifier.fillMaxWidth(), reduceMotion)
+                            Spacer(Modifier.weight(1f))
+                            ReceiveSection(state, onEvent, Modifier.fillMaxWidth())
+                        }
                     }
                 }
-
-                // Compacto (<720dp): una sola columna
-                else -> {
-                    PinCard(
-                        myPin = state.myPin,
-                        onRegenerate = { onEvent(HomeEvent.OnRegeneratePin) },
-                        onToggleDialog = { onEvent(HomeEvent.OnTogglePinDialog) },
-                    )
-                    DevicesSection(state, onEvent, Modifier.fillMaxWidth(), reduceMotion = reduceMotion)
-                    SendSection(state, onEvent, onPickFile, Modifier.fillMaxWidth(), reduceMotion)
-                    ReceiveSection(state, onEvent, Modifier.fillMaxWidth())
-                }
+            } else {
+                // Compacto (<720dp): una columna con scroll; el radar es decorativo y se omite
+                PinCard(
+                    myPin = state.myPin,
+                    onRegenerate = { onEvent(HomeEvent.OnRegeneratePin) },
+                    onToggleDialog = { onEvent(HomeEvent.OnTogglePinDialog) },
+                )
+                DevicesSection(state, onEvent, Modifier.fillMaxWidth(), reduceMotion = reduceMotion, showRadar = false)
+                SendSection(state, onEvent, onPickFile, Modifier.fillMaxWidth(), reduceMotion)
+                ReceiveSection(state, onEvent, Modifier.fillMaxWidth())
             }
         }
     }
@@ -211,6 +218,10 @@ private fun DevicesSection(
     modifier: Modifier = Modifier,
     focusManualIp: Boolean = false,
     reduceMotion: Boolean = false,
+    /** En modo fijo, la lista de dispositivos ocupa la altura restante. */
+    flexList: Boolean = false,
+    /** El radar es decorativo: en compacto se omite para ganar espacio. */
+    showRadar: Boolean = true,
 ) {
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(12.dp)) {
         RadarCard(
@@ -218,9 +229,13 @@ private fun DevicesSection(
             selected = state.selectedDevice,
             isScanning = state.isScanning,
             error = state.error,
+            trustedIds = state.trustedIds,
             reduceMotion = reduceMotion,
+            showRadar = showRadar,
+            flexList = flexList,
             onSelect = { onEvent(HomeEvent.OnDeviceSelected(it)) },
             onRetry = { onEvent(HomeEvent.OnRefresh) },
+            onForget = { onEvent(HomeEvent.OnForgetDevice(it.id, it.name)) },
         )
         ManualConnectCard(
             manualIp = state.manualIp,
@@ -436,9 +451,13 @@ private fun RadarCard(
     selected: Device?,
     isScanning: Boolean,
     error: String?,
+    trustedIds: Set<String>,
     reduceMotion: Boolean,
+    showRadar: Boolean,
+    flexList: Boolean,
     onSelect: (Device) -> Unit,
     onRetry: () -> Unit,
+    onForget: (Device) -> Unit,
 ) {
     Surface(
         shape = RoundedCornerShape(16.dp),
@@ -457,22 +476,27 @@ private fun RadarCard(
                     )
                 }
             }
-            Spacer(Modifier.height(12.dp))
-
-            RadarGraph(devices, pulse = isScanning && !reduceMotion)
+            if (showRadar) {
+                Spacer(Modifier.height(12.dp))
+                RadarGraph(devices, pulse = isScanning && !reduceMotion)
+            } else {
+                Spacer(Modifier.height(8.dp))
+            }
 
             // Contrato tri-state (#32): LOADING / EMPTY / ERROR con acción
             if (devices.isNotEmpty()) {
-                // heightIn hace que sea responsive y no corte en pantallas chicas dentro de un scroll padre
+                val listModifier = if (flexList) Modifier.weight(1f) else Modifier.heightIn(min = 120.dp, max = 260.dp)
                 LazyColumn(
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.heightIn(min = 120.dp, max = 260.dp).fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = listModifier.fillMaxWidth(),
                 ) {
                     items(devices, key = { it.id }) { device ->
                         DeviceRow(
                             device = device,
                             isSelected = device.id == selected?.id,
+                            isTrusted = device.id in trustedIds,
                             onClick = { onSelect(device) },
+                            onForget = { onForget(device) },
                         )
                     }
                 }
@@ -516,7 +540,13 @@ private fun RadarCard(
 }
 
 @Composable
-private fun DeviceRow(device: Device, isSelected: Boolean, onClick: () -> Unit) {
+private fun DeviceRow(
+    device: Device,
+    isSelected: Boolean,
+    isTrusted: Boolean,
+    onClick: () -> Unit,
+    onForget: () -> Unit,
+) {
     val border = if (isSelected) MaterialTheme.colorScheme.primary
     else MaterialTheme.colorScheme.outlineVariant
     val haptic = LocalHapticFeedback.current
@@ -537,7 +567,7 @@ private fun DeviceRow(device: Device, isSelected: Boolean, onClick: () -> Unit) 
             ),
     ) {
         Row(
-            modifier = Modifier.padding(12.dp),
+            modifier = Modifier.padding(start = 12.dp, top = 6.dp, bottom = 6.dp, end = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
@@ -558,6 +588,22 @@ private fun DeviceRow(device: Device, isSelected: Boolean, onClick: () -> Unit) 
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+            if (isTrusted) {
+                Icon(
+                    Icons.Default.Lock,
+                    contentDescription = "PIN recordado",
+                    tint = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.size(18.dp),
+                )
+                IconButton(onClick = onForget, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        Icons.Default.VisibilityOff,
+                        contentDescription = "Olvidar dispositivo ${device.name}",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
             }
         }
     }
@@ -895,88 +941,81 @@ private fun ManualConnectCard(
 }
 
 /**
- * Tarjeta única de recepción (#7): fase de aprobación explícita (nada se
- * escribe hasta aceptar) y fase de progreso no modal, descartable.
+ * Tarjeta de progreso de recepción (#7): no modal, descartable. La
+ * aprobación vive en el diálogo de HomeEntry / banner "Más tarde".
  */
 @Composable
-private fun IncomingCard(
-    incoming: IncomingUi,
-    onApprove: () -> Unit,
-    onReject: () -> Unit,
-    onDismiss: () -> Unit,
-) {
+private fun IncomingCard(incoming: IncomingUi.Receiving) {
     Surface(
         shape = RoundedCornerShape(16.dp),
-        color = when (incoming) {
-            is IncomingUi.AwaitingApproval -> MaterialTheme.colorScheme.errorContainer
-            is IncomingUi.Receiving -> MaterialTheme.colorScheme.secondaryContainer
-        },
+        color = MaterialTheme.colorScheme.secondaryContainer,
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            when (incoming) {
-                is IncomingUi.AwaitingApproval -> {
-                    Text(
-                        "¿Aceptar archivo?",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "«${incoming.fileName}» de ${incoming.peerName} (${formatSize(incoming.sizeBytes)}) quiere escribir en tu carpeta. Nada se guarda hasta que apruebes.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    val haptic = LocalHapticFeedback.current
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                        Button(
-                            onClick = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress) // #31
-                                onApprove()
-                            },
-                            modifier = Modifier.weight(1f),
-                        ) { Text("Aceptar") }
-                        OutlinedButton(
-                            onClick = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                onReject()
-                            },
-                            modifier = Modifier.weight(1f),
-                        ) { Text("Rechazar") }
-                    }
-                }
+            Text(
+                "Recibiendo «${incoming.fileName}»",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "De ${incoming.peerName} · ${formatSize(incoming.receivedBytes)} de ${formatSize(incoming.sizeBytes)} · ${(incoming.progress * 100).toInt()}%",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+            )
+            Spacer(Modifier.height(8.dp))
+            LinearProgressIndicator(
+                progress = { incoming.progress.coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
 
-                is IncomingUi.Receiving -> {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "Recibiendo «${incoming.fileName}»",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        IconButton(onClick = onDismiss) {
-                            Icon(
-                                Icons.Default.Close,
-                                contentDescription = "Ocultar progreso",
-                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = "De ${incoming.peerName} · ${formatSize(incoming.receivedBytes)} de ${formatSize(incoming.sizeBytes)} · ${(incoming.progress * 100).toInt()}%",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    LinearProgressIndicator(
-                        progress = { incoming.progress.coerceIn(0f, 1f) },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
+/**
+ * Banner no modal para aprobaciones en "Más tarde": muestra cuenta atrás y
+ * permite resolver sin volver a abrir el diálogo. La conexión sigue abierta
+ * hasta decidir o vencer (2 min).
+ */
+@Composable
+private fun DeferredApprovalBanner(
+    approval: IncomingUi.AwaitingApproval,
+    onApprove: () -> Unit,
+    onReject: () -> Unit,
+) {
+    // Cuenta atrás visual-local: ticker de 1s derivado del expiresAt del estado
+    val remainingSecs by produceState((approval.expiresAtMillis - System.currentTimeMillis()) / 1000) {
+        while (true) {
+            value = ((approval.expiresAtMillis - System.currentTimeMillis()) / 1000).coerceAtLeast(0)
+            if (value <= 0L) break
+            delay(1_000)
+        }
+    }
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(
+                "«${approval.fileName}» de ${approval.peerName} espera tu respuesta",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "${formatSize(approval.sizeBytes)} · se cancela en ${remainingSecs / 60}:${"%02d".format(remainingSecs % 60)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onApprove) { Text("Aceptar") }
+                OutlinedButton(onClick = onReject) { Text("Rechazar") }
             }
         }
     }

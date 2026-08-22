@@ -1,5 +1,7 @@
 package com.andyl.ignite.data
 
+import com.andyl.ignite.domain.TrustedDevices
+
 import android.os.Build
 import io.github.vinceglb.filekit.FileKit
 import io.github.vinceglb.filekit.filesDir
@@ -63,6 +65,17 @@ actual val appId: String = "com.andyl.ignite"
 actual fun createAppStorage(): AppStorage = AppStorage()
 
 actual fun createDeviceInfo(): DeviceInfo = DeviceInfo()
+
+actual fun createTrustedDevices(): TrustedDevices {
+    val file = File(FileKit.filesDir.path, "trusted_devices.json")
+    return TrustedDevices(
+        readRaw = { file.takeIf { it.exists() }?.readText() },
+        writeRaw = { text ->
+            file.parentFile?.mkdirs()
+            file.writeText(text)
+        },
+    )
+}
 
 actual fun revealInFileManager(path: String): Boolean = false
 

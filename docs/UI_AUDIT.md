@@ -112,3 +112,19 @@ Prioridad general: integridad primero, luego máquina de estados/UX de transfere
 - [ ] Background Android: ForegroundService + notificación persistente SOLO durante transferencia activa; WakeLock/Wi-Fi lock acotados a la sesión; limpieza garantizada al finalizar/cancelar; restauración de estado si el proceso es recreado.
 - [ ] Notificación accionable: ver progreso, identificar archivo/dispositivo, cancelar desde la notificación (requiere puente Service↔sesión de transferencia).
 - [ ] TLS: reemplazar el stub — hoy el PIN viaja en header sobre HTTP plano dentro de la LAN.
+
+---
+
+## Feedback de uso real (agosto 2026)
+
+- [x] **Bug de archivos duplicados**: cada reintento del sender creaba una solicitud de aprobación nueva (transferId con timestamp) y se apilaban prompts; aceptar varias guardaba copias "(1)", "(2)". Fix: header `X-Ignite-Upload-Id` estable (hash nombre+tamaño) — los reintentos comparten la misma aprobación y extienden la ventana. Si llega OTRO archivo mientras hay una solicitud pendiente o recepción activa → 409 inmediato (`TransferError.Busy`, sin reintentos automáticos).
+- [x] **Diálogo de aprobación** con Aceptar / Cancelar / Más tarde. "Más tarde" cierra el diálogo y deja un banner con cuenta atrás: la conexión queda abierta hasta decidir o vencer (**2 minutos**, ventana compartida por sender/receptor). Una solicitud nueva reemplaza a la anterior (la vieja se rechaza sola).
+- [x] **Recordar PIN por dispositivo** (`TrustedDevices`): tras un envío exitoso el PIN queda persistido en `trusted_devices.json`; al seleccionar ese dispositivo se precarga solo (candadito en la fila de la lista).
+- [x] **Olvidar dispositivo**: botón en cada fila confiable borra el PIN guardado — vuelve a pedir código y corta la auto-conexión.
+- [x] **UI sin scrolling**: en ventanas medianas/anchas (>720dp y altura ≥460dp) no hay scroll vertical: las columnas reparten la altura con `weight` y las listas flexan dentro de su tarjeta. El radar decorativo desaparece en compacto (celular), que conserva scroll.
+
+### Pendiente post-feedback
+
+- [ ] Indentación completa de HomeScreen (cosmético).
+- [ ] Migrar strings a recursos CMP (`Res.string`) si algún día hay i18n.
+- [ ] El banner "Más tarde" sólo vive en Home: si navegás a Historial, la cuenta atrás sigue corriendo pero no se ve (v1 aceptable).

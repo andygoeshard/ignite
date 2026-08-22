@@ -1,5 +1,7 @@
 package com.andyl.ignite.data
 
+import com.andyl.ignite.domain.TrustedDevices
+
 /**
  * Provides the storage directory where received files are saved.
  */
@@ -32,6 +34,12 @@ expect val appId: String
 expect fun createAppStorage(): AppStorage
 
 expect fun createDeviceInfo(): DeviceInfo
+
+/**
+ * Store persistente de dispositivos emparejados (PIN recordado).
+ * Archivo JSON en el directorio de la app.
+ */
+expect fun createTrustedDevices(): TrustedDevices
 
 /**
  * Opens the system file manager showing [path]'s parent folder.

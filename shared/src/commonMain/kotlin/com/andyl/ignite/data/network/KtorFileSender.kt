@@ -49,6 +49,11 @@ class KtorFileSender(
             .getOrNull()
         println("[Ignite][SND] sha256 calculado en ${System.currentTimeMillis() - t0Sha}ms: ${sha256?.take(12)}…")
 
+        // ID estable por archivo: los reintentos comparten la misma aprobación
+        // en el receptor en vez de apilar solicitudes nuevas (bug de duplicados).
+        val uploadId = sha256Hex("$fileName:$sizeBytes".encodeToByteArray()).take(16)
+        println("[Ignite][SND] uploadId=$uploadId")
+
         // 2) Query resumption offset (best-effort, falls back to 0)
         var offset = 0L
         if (pin != null) {
@@ -64,7 +69,7 @@ class KtorFileSender(
         var lastError: Exception? = null
         while (attempt < 2) {
             try {
-                executeUpload(target, localPath, fileName, sizeBytes, pin, sha256, currentOffset)
+                executeUpload(target, localPath, fileName, sizeBytes, pin, sha256, currentOffset, uploadId)
                 trySend(1f)
                 close()
                 awaitClose { }
@@ -95,6 +100,7 @@ class KtorFileSender(
         pin: String?,
         sha256: String?,
         offset: Long,
+        uploadId: String,
     ) {
         val remaining = sizeBytes - offset
         var sent = offset
@@ -150,6 +156,7 @@ class KtorFileSender(
             if (pin != null) header(HEADER_PIN, pin)
             if (offset > 0) header(HEADER_OFFSET, offset.toString())
             header(HEADER_TOTAL_BYTES, sizeBytes.toString())
+            header(HEADER_UPLOAD_ID, uploadId)
             setBody(body)
         }
 
@@ -159,7 +166,10 @@ class KtorFileSender(
             HttpStatusCode.Unauthorized -> throw IllegalStateException("PIN incorrecto - verifica el código en el receptor")
             HttpStatusCode.Forbidden -> throw IllegalStateException("Transferencia rechazada por el receptor")
             HttpStatusCode.InsufficientStorage -> throw IllegalStateException("Sin espacio en el receptor")
-            HttpStatusCode.Conflict -> throw IllegalStateException("Offset mismatch")
+            HttpStatusCode.Conflict -> {
+                val bodyText = runCatching { response.bodyAsText() }.getOrNull().orEmpty()
+                throw IllegalStateException(bodyText.ifBlank { "Offset mismatch" })
+            }
             else -> throw IllegalStateException("Transfer failed: ${response.status} ${runCatching { response.bodyAsText() }.getOrNull()}")
         }
     }
@@ -182,5 +192,6 @@ class KtorFileSender(
         const val HEADER_SHA256 = "X-Ignite-Sha256"
         const val HEADER_OFFSET = "X-Ignite-Offset"
         const val HEADER_TOTAL_BYTES = "X-Ignite-Total-Bytes"
+        const val HEADER_UPLOAD_ID = "X-Ignite-Upload-Id"
     }
 }

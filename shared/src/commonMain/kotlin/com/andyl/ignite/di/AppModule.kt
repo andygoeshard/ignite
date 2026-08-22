@@ -5,6 +5,7 @@ import com.andyl.ignite.data.DeviceInfo
 import com.andyl.ignite.data.RoomTransferRepository
 import com.andyl.ignite.data.createAppStorage
 import com.andyl.ignite.data.createDeviceInfo
+import com.andyl.ignite.data.createTrustedDevices
 import com.andyl.ignite.data.db.IgniteDatabase
 import com.andyl.ignite.data.db.createDatabase
 import com.andyl.ignite.data.network.KtorFileReceiver
@@ -36,6 +37,7 @@ val appModule: Module = module {
     single<AppStorage> { createAppStorage() }
     single<DeviceInfo> { createDeviceInfo() }
     single<PairingManager> { PairingManager() }
+    single { createTrustedDevices() }
 
     single<IgniteDatabase> { createDatabase() }
     single<TransferRepository> {
@@ -65,6 +67,7 @@ val appModule: Module = module {
             notifier = get(),
             pairingManager = get(),
             httpClient = get(),
+            trustedDevices = get(),
         )
     }
     viewModelOf(::HistoryViewModel)

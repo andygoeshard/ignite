@@ -1,5 +1,6 @@
 package com.andyl.ignite.data
 
+import com.andyl.ignite.domain.TrustedDevices
 import io.github.vinceglb.filekit.FileKit
 import io.github.vinceglb.filekit.filesDir
 import io.github.vinceglb.filekit.path
@@ -76,3 +77,14 @@ actual fun revealInFileManager(path: String): Boolean = runCatching {
 }.getOrDefault(false)
 
 actual val supportsCustomDownloadDir: Boolean = true
+
+actual fun createTrustedDevices(): TrustedDevices {
+    val file = File(FileKit.filesDir.path, "trusted_devices.json")
+    return TrustedDevices(
+        readRaw = { file.takeIf { it.exists() }?.readText() },
+        writeRaw = { text ->
+            file.parentFile?.mkdirs()
+            file.writeText(text)
+        },
+    )
+}

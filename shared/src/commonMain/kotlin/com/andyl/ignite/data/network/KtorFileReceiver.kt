@@ -66,7 +66,21 @@ class KtorFileReceiver(
 
     private var engine: EmbeddedServer<*, *>? = null
 
-    private val pendingApprovals = mutableMapOf<String, CompletableDeferred<Boolean>>()
+    /**
+     * Aprobación pendiente por uploadId (estable entre reintentos del sender).
+     * [deadline] se extiende cada vez que el mismo archivo vuelve a llegar,
+     * así la ventana de "Más tarde" corre desde la última actividad.
+     */
+    private class PendingApproval(val transferId: String) {
+        val deferred = CompletableDeferred<Boolean>()
+        @Volatile var deadline: Long = System.currentTimeMillis() + APPROVAL_WINDOW_MS
+    }
+
+    private val pendingApprovals = mutableMapOf<String, PendingApproval>()
+
+    @Volatile
+    private var activeReceivingUploadId: String? = null
+
     private val startMutex = Mutex()
 
     override suspend fun start() = startMutex.withLock {
@@ -106,14 +120,35 @@ class KtorFileReceiver(
         engine?.stop(gracePeriodMillis = 500, timeoutMillis = 1000)
         engine = null
         synchronized(pendingApprovals) {
-            pendingApprovals.values.forEach { it.complete(false) }
+            pendingApprovals.values.forEach { it.deferred.complete(false) }
             pendingApprovals.clear()
         }
     }
 
     override suspend fun decideApproval(transferId: String, approved: Boolean) {
-        val deferred = synchronized(pendingApprovals) { pendingApprovals.remove(transferId) }
-        deferred?.complete(approved)
+        val pending = synchronized(pendingApprovals) {
+            // transferId == uploadId; si no está, ya venció o se resolvió
+            pendingApprovals.entries.firstOrNull { it.value.transferId == transferId }?.let { entry ->
+                pendingApprovals.remove(entry.key)
+                entry.value
+            }
+        }
+        pending?.deferred?.complete(approved)
+    }
+
+    /**
+     * Espera la decisión del usuario hasta el deadline (que los reintentos
+     * extienden). Devuelve false por timeout o rechazo.
+     */
+    private suspend fun awaitDecision(uploadId: String, pending: PendingApproval): Boolean {
+        while (true) {
+            val remaining = pending.deadline - System.currentTimeMillis()
+            if (remaining <= 0) break
+            val decided = withTimeoutOrNull(remaining) { pending.deferred.await() }
+            if (decided != null) return decided
+        }
+        synchronized(pendingApprovals) { pendingApprovals.remove(uploadId, pending) }
+        return false
     }
 
     private fun Application.module() {
@@ -189,47 +224,75 @@ class KtorFileReceiver(
 
                 // 3) Approval gate
                 val probeFileName = requestedName ?: "archivo"
-                val transferId = "$peer-$probeFileName-${System.currentTimeMillis()}"
+                // uploadId estable: reintentos del mismo archivo comparten aprobación
+                // (bug de duplicados: cada POST generaba una solicitud nueva)
+                val uploadId = call.request.header(HEADER_UPLOAD_ID)?.takeIf { it.isNotBlank() }
+                    ?: "$peer-$probeFileName-${System.currentTimeMillis()}"
                 if (requiresApproval) {
-                    val deferred = CompletableDeferred<Boolean>()
-                    synchronized(pendingApprovals) { pendingApprovals[transferId] = deferred }
-                    _incomingEvents.tryEmit(IncomingEvent.AwaitingApproval(probeFileName, peer, totalBytes, transferId))
-                    val approved = withTimeoutOrNull(60_000) { deferred.await() } ?: false
-                    println("[Ignite][RCV] aprobación '$probeFileName' → ${if (approved) "aceptada" else "rechazada/timeout (60s)"}")
+                    var pending = synchronized(pendingApprovals) { pendingApprovals[uploadId] }
+                    if (pending == null) {
+                        // Ocupado: otra solicitud distinta espera decisión o hay recepción activa
+                        val busy = synchronized(pendingApprovals) {
+                            pendingApprovals.isNotEmpty() || activeReceivingUploadId != null
+                        }
+                        if (busy) {
+                            println("[Ignite][RCV] ocupado — rechazo inmediato de '$probeFileName' (upload=${uploadId.take(8)}…)")
+                            _incomingEvents.tryEmit(
+                                IncomingEvent.Failed(probeFileName, peer, "El receptor tiene otra solicitud en curso"),
+                            )
+                            call.respond(HttpStatusCode.Conflict, "El receptor ya está atendiendo otra solicitud. Esperá y volvé a enviar.")
+                            return@post
+                        }
+                        pending = PendingApproval(transferId = uploadId)
+                        synchronized(pendingApprovals) { pendingApprovals[uploadId] = pending }
+                        _incomingEvents.tryEmit(IncomingEvent.AwaitingApproval(probeFileName, peer, totalBytes, uploadId))
+                    } else {
+                        // Mismo archivo reintentando: extiende la ventana, no apila prompts
+                        println("[Ignite][RCV] reintento de '${probeFileName}' (upload=${uploadId.take(8)}…) — ventana extendida")
+                        pending.deadline = System.currentTimeMillis() + APPROVAL_WINDOW_MS
+                    }
+
+                    val approved = awaitDecision(uploadId, pending)
+                    println("[Ignite][RCV] aprobación '$probeFileName' → ${if (approved) "aceptada" else "rechazada/timeout (${APPROVAL_WINDOW_MS / 1000}s)"}")
                     if (!approved) {
-                        synchronized(pendingApprovals) { pendingApprovals.remove(transferId) }
+                        synchronized(pendingApprovals) { pendingApprovals.remove(uploadId, pending) }
                         _incomingEvents.tryEmit(IncomingEvent.Failed(probeFileName, peer, "Rechazado por el usuario"))
                         call.respond(HttpStatusCode.Forbidden, "Transfer rejected by user")
                         return@post
                     }
                 }
 
-                runCatching {
-                    val channel = call.receiveChannel()
-                    savedFile = receiveFile(channel, requestedName, peer, totalBytes, offset, expectedSha, transferId)
-                }.onFailure { error ->
-                    val name = savedFile?.name ?: requestedName ?: "archivo"
-                    println("[Ignite][RCV] recepción falló '$name': ${error::class.simpleName}: ${error.message}")
-                    error.printStackTrace()
-                    // No borrar archivo parcial si es por corte de red: dejar para reanudación
-                    val isResumeCandidate = error.message?.contains("SHA") == false
-                    if (!isResumeCandidate) savedFile?.delete()
-                    repository.upsert(
-                        Transfer(
-                            id = 0,
-                            fileName = name,
-                            sizeBytes = 0,
-                            direction = Transfer.Direction.RECEIVED,
-                            peerName = peer,
-                            peerHost = peer,
-                            status = Transfer.Status.FAILED,
-                            progress = 0f,
-                            createdAt = System.currentTimeMillis(),
-                        ),
-                    )
-                    _incomingEvents.tryEmit(IncomingEvent.Failed(name, peer, error.message))
-                    // Re-lanzar solo si no hemos respondido ya
-                    if (call.response.status() == null) throw error else return@post
+                activeReceivingUploadId = uploadId
+                try {
+                    runCatching {
+                        val channel = call.receiveChannel()
+                        savedFile = receiveFile(channel, requestedName, peer, totalBytes, offset, expectedSha, uploadId)
+                    }.onFailure { error ->
+                        val name = savedFile?.name ?: requestedName ?: "archivo"
+                        println("[Ignite][RCV] recepción falló '$name': ${error::class.simpleName}: ${error.message}")
+                        error.printStackTrace()
+                        // No borrar archivo parcial si es por corte de red: dejar para reanudación
+                        val isResumeCandidate = error.message?.contains("SHA") == false
+                        if (!isResumeCandidate) savedFile?.delete()
+                        repository.upsert(
+                            Transfer(
+                                id = 0,
+                                fileName = name,
+                                sizeBytes = 0,
+                                direction = Transfer.Direction.RECEIVED,
+                                peerName = peer,
+                                peerHost = peer,
+                                status = Transfer.Status.FAILED,
+                                progress = 0f,
+                                createdAt = System.currentTimeMillis(),
+                            ),
+                        )
+                        _incomingEvents.tryEmit(IncomingEvent.Failed(name, peer, error.message))
+                        // Re-lanzar solo si no hemos respondido ya
+                        if (call.response.status() == null) throw error else return@post
+                    }
+                } finally {
+                    if (activeReceivingUploadId == uploadId) activeReceivingUploadId = null
                 }
 
                 if (savedFile != null) {
@@ -372,7 +435,6 @@ class KtorFileReceiver(
         synchronized(pendingApprovals) { pendingApprovals.remove(transferId) }
         return target
     }
-
     private fun uniqueTarget(target: File): File {
         if (!target.exists()) return target
         val parent = target.parentFile ?: return target
@@ -401,9 +463,13 @@ class KtorFileReceiver(
     private companion object {
         const val DEFAULT_CHUNK_SIZE = 64 * 1024
         const val PROGRESS_STEP = 0.02f
+
+        /** Ventana de aprobación: "Más tarde" mantiene la conexión hasta 2 minutos. */
+        const val APPROVAL_WINDOW_MS = 120_000L
         const val HEADER_PIN = "X-Ignite-Pin"
         const val HEADER_SHA256 = "X-Ignite-Sha256"
         const val HEADER_OFFSET = "X-Ignite-Offset"
         const val HEADER_TOTAL_BYTES = "X-Ignite-Total-Bytes"
+        const val HEADER_UPLOAD_ID = "X-Ignite-Upload-Id"
     }
 }

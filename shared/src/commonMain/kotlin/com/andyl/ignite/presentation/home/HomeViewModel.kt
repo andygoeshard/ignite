@@ -12,6 +12,7 @@ import com.andyl.ignite.domain.IncomingEvent
 import com.andyl.ignite.domain.PairingManager
 import com.andyl.ignite.domain.TransferNotifier
 import com.andyl.ignite.domain.TransferRepository
+import com.andyl.ignite.domain.TrustedDevices
 import com.andyl.ignite.domain.model.Device
 import com.andyl.ignite.domain.model.Transfer
 import com.andyl.ignite.domain.model.TransferError
@@ -42,6 +43,7 @@ class HomeViewModel(
     private val pairingManager: PairingManager,
     private val httpClient: io.ktor.client.HttpClient? = null,
     private val enablePrune: Boolean = true,
+    private val trustedDevices: TrustedDevices? = null,
 ) : MviViewModel<HomeEvent, HomeState, HomeEffect>() {
 
     private val _devices = MutableStateFlow<List<Device>>(emptyList())
@@ -50,15 +52,20 @@ class HomeViewModel(
     private val json = Json { ignoreUnknownKeys = true }
     private var sendJob: Job? = null
     private var outcomeJob: Job? = null
+    private var approvalTimerJob: Job? = null
 
-    override fun initialState(): HomeState = HomeState(
-        deviceName = runCatching { deviceInfo.deviceName }.getOrDefault(""),
-        localIp = getLocalIp(),
-        showWelcome = runCatching { !deviceInfo.hasCustomName }.getOrDefault(false),
-        downloadPath = runCatching { storage.receiveDir() }.getOrDefault(""),
-        canChooseDownloadDir = supportsCustomDownloadDir,
-        myPin = runCatching { pairingManager.getPin() }.getOrDefault(""),
-    )
+    override fun initialState(): HomeState {
+        val trustedIds = runCatching { trustedDevices?.all().orEmpty().map { it.deviceId }.toSet() }.getOrDefault(emptySet())
+        return HomeState(
+            deviceName = runCatching { deviceInfo.deviceName }.getOrDefault(""),
+            localIp = getLocalIp(),
+            showWelcome = runCatching { !deviceInfo.hasCustomName }.getOrDefault(false),
+            downloadPath = runCatching { storage.receiveDir() }.getOrDefault(""),
+            canChooseDownloadDir = supportsCustomDownloadDir,
+            myPin = runCatching { pairingManager.getPin() }.getOrDefault(""),
+            trustedIds = trustedIds,
+        )
+    }
 
     private fun isPhysicalWifiInterface(ni: java.net.NetworkInterface): Boolean {
         val n = ni.name.lowercase()
@@ -181,6 +188,18 @@ class HomeViewModel(
             .onEach { event ->
                 when (event) {
                     is IncomingEvent.AwaitingApproval -> {
+                        val existing = state.value.incoming
+                        // Mismo upload reintentando: no re-emitir prompt ni nota
+                        if (existing is IncomingUi.AwaitingApproval && existing.transferId == event.transferId) {
+                            return@onEach
+                        }
+                        // Solicitud nueva mientras había una (defered o no): la anterior muere
+                        if (existing is IncomingUi.AwaitingApproval) {
+                            viewModelScope.launch {
+                                runCatching { receiver.decideApproval(existing.transferId, false) }
+                            }
+                            approvalTimerJob?.cancel()
+                        }
                         updateState { state ->
                             state.copy(
                                 incoming = IncomingUi.AwaitingApproval(
@@ -188,6 +207,8 @@ class HomeViewModel(
                                     peerName = peerName(event.peerHost),
                                     sizeBytes = event.totalBytes,
                                     transferId = event.transferId,
+                                    deferred = false,
+                                    expiresAtMillis = System.currentTimeMillis() + APPROVAL_WINDOW_MS,
                                 ),
                             )
                         }
@@ -226,6 +247,7 @@ class HomeViewModel(
                     }
 
                     is IncomingEvent.Completed -> {
+                        approvalTimerJob?.cancel()
                         updateState { state ->
                             state.copy(
                                 incoming = null,
@@ -239,6 +261,7 @@ class HomeViewModel(
                     }
 
                     is IncomingEvent.Failed -> {
+                        approvalTimerJob?.cancel()
                         updateState { state -> state.copy(incoming = null) }
                         showNote("No se pudo recibir «${event.fileName}»: ${event.message ?: "error desconocido"}")
                         runCatching { notifier.onFailed(event.fileName, event.message) }
@@ -254,9 +277,7 @@ class HomeViewModel(
     override fun onEventImpl(event: HomeEvent) {
         when (event) {
             HomeEvent.OnRefresh -> refresh()
-            is HomeEvent.OnDeviceSelected -> {
-                updateState { it.copy(selectedDevice = event.device) }
-            }
+            is HomeEvent.OnDeviceSelected -> onDeviceSelected(event.device)
             is HomeEvent.OnFileSelected -> addFile(event.file)
             is HomeEvent.OnFileCleared -> {
                 updateState { it.copy(pendingFiles = it.pendingFiles.filterNot { f -> f.path == event.file.path }) }
@@ -272,6 +293,8 @@ class HomeViewModel(
             HomeEvent.OnRegeneratePin -> regeneratePin()
             HomeEvent.OnApproveIncoming -> decideApproval(true)
             HomeEvent.OnRejectIncoming -> decideApproval(false)
+            HomeEvent.OnIncomingDeferred -> deferApproval()
+            is HomeEvent.OnForgetDevice -> forgetDevice(event.deviceId, event.name)
             HomeEvent.OnTogglePinDialog -> updateState { it.copy(showPinDialog = !it.showPinDialog, myPin = runCatching { pairingManager.getPin() }.getOrDefault(it.myPin)) }
             is HomeEvent.OnManualIpChanged -> updateState { it.copy(manualIp = event.ip.trim().take(45)) }
             HomeEvent.OnManualConnect -> viewModelScope.launch { connectManual() }
@@ -288,6 +311,65 @@ class HomeViewModel(
         updateState { it.copy(sendSession = SendSession.Cancelling(current)) }
         showNote("Cancelando transferencia…")
         job.cancel()
+    }
+
+    /**
+     * Selección de dispositivo: si ya le pusimos el PIN alguna vez, se precarga
+     * (auto-conexión). Si no es confiable, se limpia cualquier PIN viejo.
+     */
+    private fun onDeviceSelected(device: Device) {
+        val trustedPin = runCatching { trustedDevices?.pinFor(device.id) }.getOrNull()
+        updateState { state ->
+            state.copy(
+                selectedDevice = device,
+                targetPin = trustedPin?.pin ?: "",
+                pinRememberedFor = trustedPin?.let { device.name },
+            )
+        }
+        if (trustedPin != null) showNote("PIN recordado de ${device.name} — listo para enviar")
+    }
+
+    private fun forgetDevice(deviceId: String, name: String) {
+        val removed = runCatching { trustedDevices?.forget(deviceId) ?: false }.getOrDefault(false)
+        if (!removed) return
+        updateState { state ->
+            state.copy(
+                trustedIds = state.trustedIds - deviceId,
+                targetPin = if (state.selectedDevice?.id == deviceId) "" else state.targetPin,
+                pinRememberedFor = state.pinRememberedFor?.takeIf { state.selectedDevice?.id != deviceId },
+            )
+        }
+        showNote("Olvidaste a $name — va a pedir su PIN de nuevo")
+    }
+
+    private fun decideApproval(approved: Boolean) {
+        val pending = state.value.incoming as? IncomingUi.AwaitingApproval ?: return
+        approvalTimerJob?.cancel()
+        viewModelScope.launch {
+            runCatching { receiver.decideApproval(pending.transferId, approved) }
+        }
+        updateState { it.copy(incoming = null) }
+        showNote(if (approved) "Aceptaste «${pending.fileName}» — recibiendo…" else "Rechazaste «${pending.fileName}»")
+    }
+
+    /**
+     * "Más tarde": la conexión queda abierta hasta que decidas o venza la
+     * ventana (2 min). El diálogo se reemplaza por un banner con cuenta atrás.
+     */
+    private fun deferApproval() {
+        val pending = state.value.incoming as? IncomingUi.AwaitingApproval ?: return
+        approvalTimerJob?.cancel()
+        updateState { it.copy(incoming = pending.copy(deferred = true)) }
+        showNote("«${pending.fileName}» en espera — tenés 2 minutos para decidir")
+        approvalTimerJob = viewModelScope.launch {
+            delay((pending.expiresAtMillis - System.currentTimeMillis()).coerceAtLeast(0))
+            val stillPending = state.value.incoming as? IncomingUi.AwaitingApproval ?: return@launch
+            if (stillPending.transferId == pending.transferId) {
+                runCatching { receiver.decideApproval(pending.transferId, false) }
+                updateState { it.copy(incoming = null) }
+                showNote("Se venció el tiempo para «${pending.fileName}» — pedile al otro que lo envíe de nuevo")
+            }
+        }
     }
 
     private suspend fun connectManual() {
@@ -351,15 +433,6 @@ class HomeViewModel(
         val newPin = pairingManager.regenerate()
         updateState { it.copy(myPin = newPin) }
         showNote("Nuevo PIN: $newPin")
-    }
-
-    private fun decideApproval(approved: Boolean) {
-        val pending = state.value.incoming as? IncomingUi.AwaitingApproval ?: return
-        viewModelScope.launch {
-            runCatching { receiver.decideApproval(pending.transferId, approved) }
-        }
-        updateState { it.copy(incoming = null) }
-        showNote(if (approved) "Aceptaste «${pending.fileName}» — recibiendo…" else "Rechazaste «${pending.fileName}»")
     }
 
     private fun openFolder(path: String) {
@@ -502,6 +575,16 @@ class HomeViewModel(
                     pendingFiles = if (cancelled) it.pendingFiles else emptyList(),
                 )
             }
+            // PIN recordado: si la cola completa salió bien, este dispositivo queda emparejado
+            if (!cancelled && failedFile == null) {
+                val remembered = runCatching {
+                    trustedDevices?.remember(target.id, target.name, target.host, pin)
+                    true
+                }.getOrDefault(false)
+                if (remembered) {
+                    updateState { it.copy(trustedIds = it.trustedIds + target.id, pinRememberedFor = target.name) }
+                }
+            }
             val outcome = when {
                 cancelled -> SendOutcome(files.first().name, target.name, success = false, cancelled = true)
                 failedFile == null -> SendOutcome(files.first().name, target.name, success = true, count = files.size)
@@ -531,8 +614,9 @@ class HomeViewModel(
                 throw e
             } catch (e: Exception) {
                 val isLastAttempt = attempt == MAX_SEND_ATTEMPTS - 1
-                // Reintentar no sirve ante PIN/rechazo del receptor (#26)
-                val isUserError = TransferError.from(e) is TransferError.PinRejected
+                // Reintentar no sirve ante PIN/rechazo/receptor ocupado (#26)
+                val error = TransferError.from(e)
+                val isUserError = error is TransferError.PinRejected || error is TransferError.Busy
                 if (isUserError || isLastAttempt) throw e
                 val backoffMs = RETRY_BACKOFF_MS[attempt]
                 println("[Ignite][VM] reintento ${attempt + 1}/$MAX_SEND_ATTEMPTS de '${file.name}' en ${backoffMs}ms: ${e.message}")
@@ -566,6 +650,9 @@ class HomeViewModel(
         const val MAX_RECENT = 4
         const val MAX_SEND_ATTEMPTS = 4
         const val PROGRESS_PERSIST_STEP = 0.05f
+
+        /** Igual que el receptor: ventana total de "Más tarde". */
+        const val APPROVAL_WINDOW_MS = 120_000L
         val RETRY_BACKOFF_MS = longArrayOf(1_500L, 3_000L, 6_000L)
     }
 }

@@ -41,6 +41,8 @@ import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -129,6 +131,60 @@ fun HomeEntry(onNavigateToHistory: () -> Unit) {
             onDismiss = { vm.onEvent(HomeEvent.OnDialogDismiss) },
         )
     }
+
+    // Aprobación de archivos entrantes como diálogo modal: Aceptar / Cancelar / Más tarde.
+    // "Más tarde" cierra el diálogo y deja un banner con cuenta atrás en la pantalla.
+    (state.incoming as? IncomingUi.AwaitingApproval)?.takeIf { !it.deferred }?.let { approval ->
+        IncomingApprovalDialog(
+            approval = approval,
+            onApprove = { vm.onEvent(HomeEvent.OnApproveIncoming) },
+            onReject = { vm.onEvent(HomeEvent.OnRejectIncoming) },
+            onDefer = { vm.onEvent(HomeEvent.OnIncomingDeferred) },
+        )
+    }
+}
+
+@Composable
+private fun IncomingApprovalDialog(
+    approval: IncomingUi.AwaitingApproval,
+    onApprove: () -> Unit,
+    onReject: () -> Unit,
+    onDefer: () -> Unit,
+) {
+    val haptic = LocalHapticFeedback.current
+    AlertDialog(
+        onDismissRequest = onDefer,
+        title = { Text("¿Aceptar archivo?", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("«${approval.fileName}» quiere entrar desde ${approval.peerName}.")
+                Text(
+                    "${formatSize(approval.sizeBytes)} · nada se guarda hasta que apruebes.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    "Si elegís \"Más tarde\", la conexión queda abierta hasta 2 minutos.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress) // #31
+                    onApprove()
+                },
+            ) { Text("Aceptar") }
+        },
+        dismissButton = {
+            Column(horizontalAlignment = Alignment.End) {
+                TextButton(onClick = onDefer) { Text("Más tarde") }
+                TextButton(onClick = onReject) { Text("Cancelar") }
+            }
+        },
+    )
 }
 
 @Composable

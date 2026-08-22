@@ -22,6 +22,10 @@ sealed interface IncomingUi {
         val peerName: String,
         val sizeBytes: Long,
         val transferId: String,
+        /** El usuario eligió "Más tarde": el diálogo se cierra, queda el banner. */
+        val deferred: Boolean = false,
+        /** Límite (epoch ms) en que la conexión se corta si no hay decisión. */
+        val expiresAtMillis: Long = 0L,
     ) : IncomingUi
 
     data class Receiving(
@@ -105,6 +109,8 @@ sealed interface HomeEvent {
     data object OnRegeneratePin : HomeEvent
     data object OnApproveIncoming : HomeEvent
     data object OnRejectIncoming : HomeEvent
+    data object OnIncomingDeferred : HomeEvent
+    data class OnForgetDevice(val deviceId: String, val name: String) : HomeEvent
     data object OnTogglePinDialog : HomeEvent
     data class OnManualIpChanged(val ip: String) : HomeEvent
     data object OnManualConnect : HomeEvent
@@ -133,6 +139,10 @@ data class HomeState(
     val sendOutcome: SendOutcome? = null,
     val downloadPath: String = "",
     val canChooseDownloadDir: Boolean = false,
+    /** Dispositivos con PIN recordado (ids) para mostrar el candadito en la lista. */
+    val trustedIds: Set<String> = emptySet(),
+    /** Nombre del dispositivo cuyo PIN se precargó automáticamente. */
+    val pinRememberedFor: String? = null,
 ) {
     val canSend: Boolean
         get() = selectedDevice != null &&

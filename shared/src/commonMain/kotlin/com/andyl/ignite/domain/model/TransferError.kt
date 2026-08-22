@@ -9,6 +9,9 @@ sealed class TransferError(open val detail: String?) {
     /** PIN incorrecto o solicitud rechazada por el receptor (403). */
     data class PinRejected(override val detail: String? = null) : TransferError(detail)
 
+    /** El receptor tiene otra solicitud pendiente o recepción en curso (409). No reintenta. */
+    data class Busy(override val detail: String? = null) : TransferError(detail)
+
     /** El destino no está accesible: IP mal, app cerrada, firewall u otra red. */
     data class Unreachable(val host: String?, override val detail: String? = null) : TransferError(detail)
 
@@ -28,6 +31,10 @@ sealed class TransferError(open val detail: String?) {
                 m.contains("PIN incorrecto", ignoreCase = true) ||
                     m.contains("rechazada", ignoreCase = true) ||
                     m.contains("rechazado", ignoreCase = true) -> PinRejected(m)
+
+                m.contains("otra solicitud", ignoreCase = true) ||
+                    m.contains("atendiendo otra", ignoreCase = true) ||
+                    m.contains("ocupado", ignoreCase = true) -> Busy(m)
 
                 t is java.net.UnknownHostException ||
                     t is java.net.ConnectException ||
@@ -56,6 +63,8 @@ sealed class TransferError(open val detail: String?) {
     fun userMessage(peerName: String): String = when (this) {
         is PinRejected ->
             "PIN incorrecto o solicitud rechazada por $peerName. Pedile el PIN actual y volvé a enviar."
+        is Busy ->
+            "$peerName está atendiendo otra solicitud. Esperá que termine y volvé a enviar."
         is Unreachable ->
             "No se pudo conectar con $peerName. Revisá que Ignite esté abierto allá, en la misma red Wi-Fi y sin bloqueo de firewall."
         is Timeout ->
