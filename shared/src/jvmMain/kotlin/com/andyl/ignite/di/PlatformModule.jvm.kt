@@ -17,7 +17,7 @@ actual fun platformModule(): Module = module {
             listOf(
                 UdpDeviceDiscovery(get<DeviceInfo>()),
                 MdnsDeviceDiscovery(get<DeviceInfo>()),
-                SubnetScannerDiscovery(get()),
+                SubnetScannerDiscovery(get(), get()),
             ),
         )
     }

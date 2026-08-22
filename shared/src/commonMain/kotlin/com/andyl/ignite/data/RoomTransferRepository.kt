@@ -18,7 +18,4 @@ class RoomTransferRepository(
     override suspend fun upsert(transfer: Transfer) = dao.upsert(transfer.toEntity())
 
     override suspend fun clearHistory() = dao.clearAll()
-
-    suspend fun cleanupOld(cutoffMillis: Long = System.currentTimeMillis() - 30L * 24 * 60 * 60 * 1000) =
-        dao.deleteOlderThan(cutoffMillis)
 }

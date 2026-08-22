@@ -12,7 +12,4 @@ class NoopTransferDao : TransferDao {
     override suspend fun upsert(entity: TransferEntity) = Unit
     override fun observeAll(): Flow<List<TransferEntity>> = flowOf(emptyList())
     override suspend fun clearAll() = Unit
-    override suspend fun deleteOlderThan(cutoff: Long) = Unit
-    override suspend fun deleteFailed() = Unit
-    override suspend fun count(): Int = 0
 }

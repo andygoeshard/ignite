@@ -1,11 +1,16 @@
 package com.andyl.ignite.data.network
 
 import com.andyl.ignite.data.AppStorage
+import com.andyl.ignite.data.DeviceInfo
 import com.andyl.ignite.domain.FileReceiver
 import com.andyl.ignite.domain.IncomingEvent
 import com.andyl.ignite.domain.PairingManager
 import com.andyl.ignite.domain.TransferRepository
+import com.andyl.ignite.domain.model.Beacon
 import com.andyl.ignite.domain.model.Transfer
+import com.andyl.ignite.domain.model.TransferDefaults
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.PartData
@@ -33,6 +38,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.FileOutputStream
@@ -46,6 +54,7 @@ class KtorFileReceiver(
     private val storage: AppStorage,
     private val repository: TransferRepository,
     private val pairingManager: PairingManager,
+    private val deviceInfo: DeviceInfo,
     private val port: Int,
     private val engineFactory: (Application.() -> Unit, Int) -> EmbeddedServer<*, *>,
     override val requiresApproval: Boolean = true,
@@ -59,10 +68,39 @@ class KtorFileReceiver(
     private var engine: EmbeddedServer<*, *>? = null
 
     private val pendingApprovals = mutableMapOf<String, CompletableDeferred<Boolean>>()
+    private val startMutex = Mutex()
 
-    override suspend fun start() {
-        if (engine != null) return
-        engine = engineFactory({ module() }, port).also { it.start(wait = false) }
+    override suspend fun start() = startMutex.withLock {
+        if (engine != null) return@withLock
+        var last: Exception? = null
+        repeat(3) { attempt ->
+            try {
+                engine = engineFactory({ module() }, port).also { it.start(wait = false) }
+                // CIO hace bind async en worker; esperamos y hacemos health-check a localhost
+                delay(400)
+                val ok = runCatching {
+                    java.net.Socket().use { s ->
+                        s.connect(java.net.InetSocketAddress("127.0.0.1", port), 500)
+                        true
+                    }
+                }.getOrDefault(false)
+                if (!ok) throw java.net.BindException("Health-check falló en :$port (TIME_WAIT)")
+                return@withLock
+            } catch (e: java.net.BindException) {
+                last = e
+                runCatching { engine?.stop(0, 0) }
+                engine = null
+                delay(800L * (attempt + 1))
+            } catch (e: Exception) {
+                if (e.message?.contains("Address already in use") == true || e is java.net.BindException) {
+                    last = e
+                    runCatching { engine?.stop(0, 0) }
+                    engine = null
+                    delay(800L * (attempt + 1))
+                } else throw e
+            }
+        }
+        throw last ?: IllegalStateException("No se pudo bindear :$port")
     }
 
     override suspend fun stop() {
@@ -89,6 +127,10 @@ class KtorFileReceiver(
         routing {
             get("/") {
                 call.respond(HttpStatusCode.OK)
+            }
+            get("/beacon") {
+                val beacon = Beacon(deviceId = deviceInfo.deviceId, deviceName = deviceInfo.deviceName, port = TransferDefaults.PORT)
+                call.respondText(Json.encodeToString(beacon), io.ktor.http.ContentType.Application.Json)
             }
             // Offset query for resumption: returns existing bytes for given fileName
             get("/upload/status") {

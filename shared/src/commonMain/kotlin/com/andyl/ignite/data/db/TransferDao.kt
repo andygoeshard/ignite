@@ -16,13 +16,4 @@ interface TransferDao {
 
     @Query("DELETE FROM transfers")
     suspend fun clearAll()
-
-    @Query("DELETE FROM transfers WHERE createdAt < :cutoff")
-    suspend fun deleteOlderThan(cutoff: Long)
-
-    @Query("DELETE FROM transfers WHERE status = 'FAILED'")
-    suspend fun deleteFailed()
-
-    @Query("SELECT COUNT(*) FROM transfers")
-    suspend fun count(): Int
 }

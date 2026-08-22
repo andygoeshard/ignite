@@ -10,6 +10,19 @@ class IgniteApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Evita crash por BindException async de Ktor CIO cuando el puerto está en TIME_WAIT
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            val isBind = throwable is java.net.BindException ||
+                throwable.cause is java.net.BindException ||
+                throwable.message?.contains("Address already in use") == true ||
+                throwable.cause?.message?.contains("Address already in use") == true
+            if (isBind) {
+                android.util.Log.w("Ignite", "BindException ignorado (puerto en TIME_WAIT, se reintentará): $throwable")
+            } else {
+                defaultHandler?.uncaughtException(thread, throwable)
+            }
+        }
         AndroidContextHolder.context = applicationContext
         initKoin()
         acquireMulticastLock()

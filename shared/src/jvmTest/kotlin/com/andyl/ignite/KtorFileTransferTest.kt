@@ -30,8 +30,9 @@ class KtorFileTransferTest {
         val storage = AppStorage()
         val repository = RoomTransferRepository(NoopTransferDao())
         val pairing = PairingManager()
+        val deviceInfo = com.andyl.ignite.data.DeviceInfo()
         val pin = pairing.getPin()
-        val receiver = KtorFileReceiver(storage, repository, pairing, port, ::createServerEngine, requiresApproval = false)
+        val receiver = KtorFileReceiver(storage, repository, pairing, deviceInfo, port, ::createServerEngine, requiresApproval = false)
         receiver.start()
 
         val sender = KtorFileSender(createHttpClient())

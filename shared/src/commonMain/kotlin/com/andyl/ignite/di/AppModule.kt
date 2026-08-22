@@ -48,6 +48,7 @@ val appModule: Module = module {
             storage = get(),
             repository = get(),
             pairingManager = get(),
+            deviceInfo = get(),
             port = TransferDefaults.PORT,
             engineFactory = ::createServerEngine,
         )
