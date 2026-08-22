@@ -60,7 +60,7 @@ class HomeViewModel(
     }
 
     private fun getLocalIp(): String = runCatching {
-        // Prioriza en0 (Wi-Fi real) y evita 10.243.x de VPN
+        // Prioriza en0/wlan0 (Wi-Fi real) y evita 10.243.x de VPN
         java.net.NetworkInterface.getNetworkInterfaces().asSequence()
             .filter { it.isUp && !it.isLoopback && isPhysicalWifiInterface(it) }
             .flatMap { it.inetAddresses.asSequence() }
@@ -73,7 +73,15 @@ class HomeViewModel(
                 .flatMap { it.inetAddresses.asSequence() }
                 .filter { !it.isLoopbackAddress && it is java.net.Inet4Address }
                 .map { it.hostAddress ?: "" }
-                .firstOrNull { it.startsWith("192.168.") } ?: ""
+                .firstOrNull { it.startsWith("192.168.") } ?: run {
+                // Último recurso (emulador: 10.0.2.15): cualquier IPv4 no-loopback
+                java.net.NetworkInterface.getNetworkInterfaces().asSequence()
+                    .filter { it.isUp && !it.isLoopback }
+                    .flatMap { it.inetAddresses.asSequence() }
+                    .filter { !it.isLoopbackAddress && it is java.net.Inet4Address }
+                    .mapNotNull { it.hostAddress }
+                    .firstOrNull() ?: ""
+            }
         }
     }.getOrDefault("")
 
