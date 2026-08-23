@@ -43,6 +43,8 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.PowerSettingsNew
+import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -89,6 +91,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.andyl.ignite.domain.TrustPolicy
 import com.andyl.ignite.domain.model.Device
 import com.andyl.ignite.presentation.format.formatSize
 import kotlinx.coroutines.delay
@@ -130,6 +133,10 @@ fun HomeScreen(
         val scrollable = compact || maxHeight < 460.dp
         // #30: una sola lectura por composición; desactiva spins/pulsos/slides
         val reduceMotion = remember { com.andyl.ignite.data.isReduceMotionEnabled() }
+        // Escáner de QR (null en Desktop): un solo lanzador para toda la pantalla
+        val qrScanner = rememberQrScannerLauncher { raw ->
+            if (raw != null) onEvent(HomeEvent.OnQrScanned(raw))
+        }
 
         Column(
             modifier = Modifier
@@ -142,8 +149,10 @@ fun HomeScreen(
                 deviceName = state.deviceName,
                 localIp = state.localIp,
                 isScanning = state.isScanning,
+                receiverActive = state.receiverActive,
                 reduceMotion = reduceMotion,
                 onRefresh = { onEvent(HomeEvent.OnRefresh) },
+                onToggleActive = { onEvent(HomeEvent.OnToggleReceiverActive) },
             )
 
             if (state.interrupted.isNotEmpty()) {
@@ -181,6 +190,7 @@ fun HomeScreen(
                         DevicesCard(
                             state = state,
                             onEvent = onEvent,
+                            scanQr = qrScanner,
                             focusManualIp = true,
                             flexList = true,
                             modifier = Modifier.weight(1f),
@@ -197,6 +207,7 @@ fun HomeScreen(
                         DevicesCard(
                             state = state,
                             onEvent = onEvent,
+                            scanQr = qrScanner,
                             focusManualIp = true,
                             flexList = true,
                             modifier = Modifier.weight(1f),
@@ -227,6 +238,7 @@ fun HomeScreen(
                 DevicesCard(
                     state = state,
                     onEvent = onEvent,
+                            scanQr = qrScanner,
                     focusManualIp = false,
                     flexList = false,
                     modifier = Modifier.fillMaxWidth(),
@@ -250,6 +262,8 @@ private fun DevicesCard(
     focusManualIp: Boolean = false,
     /** En modo fijo, la lista ocupa la altura restante. */
     flexList: Boolean = false,
+    /** Lanzador del escáner de QR; null en plataformas sin cámara. */
+    scanQr: (() -> Unit)? = null,
 ) {
     NeoCard(
         modifier = modifier,
@@ -305,12 +319,15 @@ private fun DevicesCard(
                     modifier = listModifier.fillMaxWidth(),
                 ) {
                     items(state.devices, key = { it.id }) { device ->
+                        val policy = state.devicePolicies[device.id] ?: TrustPolicy.ASK
                         DeviceRow(
                             device = device,
                             isSelected = device.id == state.selectedDevice?.id,
                             isTrusted = device.id in state.trustedIds,
+                            policy = policy,
                             onClick = { onEvent(HomeEvent.OnDeviceSelected(device)) },
                             onForget = { onEvent(HomeEvent.OnForgetDevice(device.id, device.name)) },
+                            onCyclePolicy = { onEvent(HomeEvent.OnCycleDevicePolicy(device.id)) },
                         )
                     }
                 }
@@ -341,6 +358,31 @@ private fun DevicesCard(
             onConnect = { onEvent(HomeEvent.OnManualConnect) },
             requestFocus = focusManualIp,
         )
+
+        // Emparejamiento por QR: mostrar propio / escanear ajeno (donde haya cámara)
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            OutlinedButton(
+                onClick = { onEvent(HomeEvent.OnShowPairQr) },
+                enabled = state.localIp.isNotBlank() && !state.isSendActive && state.receiverActive,
+                modifier = Modifier.weight(1f),
+            ) {
+                Icon(Icons.Default.QrCode2, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Emparejar por QR", style = MaterialTheme.typography.labelLarge)
+            }
+            if (scanQr != null) {
+                Button(
+                    onClick = scanQr,
+                    enabled = !state.isSendActive,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Escanear", style = MaterialTheme.typography.labelLarge)
+                }
+            }
+        }
     }
 }
 
@@ -825,8 +867,10 @@ private fun Header(
     deviceName: String,
     localIp: String,
     isScanning: Boolean,
+    receiverActive: Boolean,
     reduceMotion: Boolean,
     onRefresh: () -> Unit,
+    onToggleActive: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -834,7 +878,20 @@ private fun Header(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                if (deviceName.isNotBlank()) {
+                if (!receiverActive) {
+                    Text(
+                        text = "Recepción pausada — invisible en la red",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Text(
+                        text = deviceName.ifBlank { "Ignite" },
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else if (deviceName.isNotBlank()) {
                     Text(
                         text = "Visible en la red como",
                         style = MaterialTheme.typography.labelMedium,
@@ -853,6 +910,15 @@ private fun Header(
                         fontWeight = FontWeight.Bold,
                     )
                 }
+            }
+            // Pausar/reactivar receptor (estilo "Receiving Off" de AirDrop)
+            IconButton(onClick = onToggleActive) {
+                Icon(
+                    Icons.Default.PowerSettingsNew,
+                    contentDescription = if (receiverActive) "Pausar recepción" else "Reactivar recepción",
+                    tint = if (receiverActive) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.error,
+                )
             }
             IconButton(onClick = onRefresh) {
                 val spin = rememberInfiniteTransition(label = "refresh-spin")
@@ -887,8 +953,10 @@ private fun DeviceRow(
     device: Device,
     isSelected: Boolean,
     isTrusted: Boolean,
+    policy: TrustPolicy,
     onClick: () -> Unit,
     onForget: () -> Unit,
+    onCyclePolicy: () -> Unit,
 ) {
     val border = if (isSelected) MaterialTheme.colorScheme.primary
     else MaterialTheme.colorScheme.outlineVariant
@@ -927,18 +995,29 @@ private fun DeviceRow(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    text = device.host,
+                    text = if (policy == TrustPolicy.ASK) device.host
+                    else "${device.host} · ${policyLabel(policy)}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (policy == TrustPolicy.ASK) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.tertiary,
                 )
             }
             if (isTrusted) {
-                Icon(
-                    Icons.Default.Lock,
-                    contentDescription = "PIN recordado",
-                    tint = MaterialTheme.colorScheme.tertiary,
-                    modifier = Modifier.size(18.dp),
-                )
+                IconButton(onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onCyclePolicy()
+                }, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        Icons.Default.Lock,
+                        contentDescription = policyDescription(policy),
+                        tint = when (policy) {
+                            TrustPolicy.ASK -> MaterialTheme.colorScheme.tertiary
+                            TrustPolicy.AUTO -> MaterialTheme.colorScheme.primary
+                            TrustPolicy.SILENT -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
                 IconButton(onClick = onForget, modifier = Modifier.size(36.dp)) {
                     Icon(
                         Icons.Default.VisibilityOff,
@@ -950,6 +1029,20 @@ private fun DeviceRow(
             }
         }
     }
+}
+
+/** Etiqueta corta del modo de recepción, junto a la IP. */
+private fun policyLabel(policy: TrustPolicy): String = when (policy) {
+    TrustPolicy.ASK -> ""
+    TrustPolicy.AUTO -> "auto-aceptar"
+    TrustPolicy.SILENT -> "silencioso"
+}
+
+/** Accesibilidad del candado que rota la política. */
+private fun policyDescription(policy: TrustPolicy): String = when (policy) {
+    TrustPolicy.ASK -> "Te pregunta antes de aceptar. Tocá para auto-aceptar."
+    TrustPolicy.AUTO -> "Auto-acepta sus archivos. Tocá para modo silencioso."
+    TrustPolicy.SILENT -> "Modo silencioso. Tocá para volver a preguntar."
 }
 
 @Composable

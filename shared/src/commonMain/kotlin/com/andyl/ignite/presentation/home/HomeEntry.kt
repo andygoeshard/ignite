@@ -1,15 +1,17 @@
 package com.andyl.ignite.presentation.home
-
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Person
@@ -37,6 +39,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isCtrlPressed
@@ -44,12 +47,14 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.andyl.ignite.domain.TrustPolicy
 import com.andyl.ignite.presentation.format.formatSize
 import io.github.vinceglb.filekit.dialogs.FileKitMode
 import io.github.vinceglb.filekit.dialogs.compose.rememberDirectoryPickerLauncher
@@ -141,12 +146,28 @@ fun HomeEntry(onNavigateToHistory: () -> Unit) {
         )
     }
 
+    // QR de emparejamiento propio: escanealo desde el otro dispositivo.
+    if (state.showPairQrDialog) {
+        PairQrDialog(
+            qrBitmap = remember(state.myPin, state.localIp) {
+                runCatching { com.andyl.ignite.data.generateQr(vm.pairingQrContent()) }.getOrNull()
+            },
+            deviceName = state.deviceName,
+            myPin = state.myPin,
+            onDismiss = { vm.onEvent(HomeEvent.OnShowPairQr) },
+        )
+    }
+
     // Aprobación de archivos entrantes como diálogo modal: Aceptar / Cancelar / Más tarde.
     // "Más tarde" cierra el diálogo y deja un banner con cuenta atrás en la pantalla.
     (state.incoming as? IncomingUi.AwaitingApproval)?.takeIf { !it.deferred }?.let { approval ->
+        val alreadyAuto = approval.peerDeviceId?.let { state.devicePolicies[it] } == TrustPolicy.AUTO
         IncomingApprovalDialog(
             approval = approval,
             onApprove = { vm.onEvent(HomeEvent.OnApproveIncoming) },
+            onApproveAlways = approval.peerDeviceId?.takeIf { !alreadyAuto }?.let { id ->
+                { vm.onEvent(HomeEvent.OnApproveIncomingAlways(id)) }
+            },
             onReject = { vm.onEvent(HomeEvent.OnRejectIncoming) },
             onDefer = { vm.onEvent(HomeEvent.OnIncomingDeferred) },
         )
@@ -157,6 +178,7 @@ fun HomeEntry(onNavigateToHistory: () -> Unit) {
 private fun IncomingApprovalDialog(
     approval: IncomingUi.AwaitingApproval,
     onApprove: () -> Unit,
+    onApproveAlways: (() -> Unit)?,
     onReject: () -> Unit,
     onDefer: () -> Unit,
 ) {
@@ -165,7 +187,32 @@ private fun IncomingApprovalDialog(
         onDismissRequest = onDefer,
         title = { Text("¿Aceptar archivo?", fontWeight = FontWeight.Bold) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                val previewBitmap = approval.previewBytes?.let { bytes ->
+                    remember(bytes) { com.andyl.ignite.data.decodePreview(bytes) }
+                }
+                if (previewBitmap != null) {
+                    Image(
+                        bitmap = previewBitmap,
+                        contentDescription = "Vista previa de ${approval.fileName}",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .heightIn(max = 180.dp)
+                            .fillMaxWidth()
+                            .clip(MaterialTheme.shapes.medium),
+                    )
+                } else {
+                    Icon(
+                        Icons.Default.Description,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(44.dp),
+                    )
+                }
                 Text("«${approval.fileName}» quiere entrar desde ${approval.peerName}.")
                 Text(
                     "${formatSize(approval.sizeBytes)} · nada se guarda hasta que apruebes.",
@@ -189,9 +236,56 @@ private fun IncomingApprovalDialog(
         },
         dismissButton = {
             Column(horizontalAlignment = Alignment.End) {
+                if (onApproveAlways != null) {
+                    TextButton(onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        onApproveAlways()
+                    }) { Text("Aceptar siempre de este dispositivo") }
+                }
                 TextButton(onClick = onDefer) { Text("Más tarde") }
                 TextButton(onClick = onReject) { Text("Cancelar") }
             }
+        },
+    )
+}
+
+@Composable
+private fun PairQrDialog(
+    qrBitmap: androidx.compose.ui.graphics.ImageBitmap?,
+    deviceName: String,
+    myPin: String,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Emparejar por QR", fontWeight = FontWeight.Bold) },
+        text = {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                if (qrBitmap != null) {
+                    Image(
+                        bitmap = qrBitmap,
+                        contentDescription = "Código QR de emparejamiento",
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text("Escaneá este código desde Ignite en el otro dispositivo.")
+                    // El PIN viaja dentro del QR, pero mostrarlo sirve para emparejar a mano
+                    Text(
+                        "PIN manual: $myPin",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Text("No se pudo generar tu QR — usá el PIN manual: $myPin")
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) { Text("Listo") }
         },
     )
 }

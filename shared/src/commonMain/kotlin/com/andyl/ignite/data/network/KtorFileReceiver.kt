@@ -6,11 +6,16 @@ import com.andyl.ignite.domain.FileReceiver
 import com.andyl.ignite.domain.IncomingEvent
 import com.andyl.ignite.domain.PairingManager
 import com.andyl.ignite.domain.TransferRepository
+import com.andyl.ignite.domain.TrustPolicy
+import com.andyl.ignite.domain.TrustedDevices
 import com.andyl.ignite.domain.model.Beacon
 import com.andyl.ignite.domain.model.Transfer
 import com.andyl.ignite.domain.model.TransferDefaults
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.Application
@@ -30,6 +35,7 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.ktor.utils.io.readAvailable
+import io.ktor.utils.io.readRemaining
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -41,9 +47,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.io.readByteArray
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
+
+/** Identidad declarada por el emisor en el handshake /pair. */
+private data class PairIdentity(val id: String?, val name: String?)
 
 /**
  * Embedded Ktor HTTP server that receives file uploads and stores them in the
@@ -56,6 +66,7 @@ class KtorFileReceiver(
     private val deviceInfo: DeviceInfo,
     private val port: Int,
     private val engineFactory: (Application.() -> Unit, Int) -> EmbeddedServer<*, *>,
+    private val trustedDevices: TrustedDevices? = null,
     override val requiresApproval: Boolean = true,
 ) : FileReceiver {
 
@@ -86,6 +97,12 @@ class KtorFileReceiver(
      *  de red no vuelve a preguntar: ya dijiste que sí a este archivo. */
     private val recentlyApproved = mutableMapOf<String, Long>()
 
+    /** Miniaturas por uploadId (llegan ANTES del /upload, para el diálogo). */
+    private class PreviewEntry(val bytes: ByteArray) {
+        val at: Long = System.currentTimeMillis()
+    }
+    private val pendingPreviews = linkedMapOf<String, PreviewEntry>()
+
     @Volatile
     private var activeReceivingUploadId: String? = null
 
@@ -115,7 +132,24 @@ class KtorFileReceiver(
         val cutoff = System.currentTimeMillis() - COMPLETED_TTL_MS
         synchronized(recentlyCompleted) { recentlyCompleted.values.removeAll { it < cutoff } }
         synchronized(recentlyApproved) { recentlyApproved.values.removeAll { it < cutoff } }
+        synchronized(pendingPreviews) {
+            pendingPreviews.entries.removeIf { it.value.at < cutoff }
+        }
     }
+
+    private fun storePendingPreview(uploadId: String, bytes: ByteArray) {
+        if (bytes.isEmpty() || bytes.size > MAX_PREVIEW_BYTES) return
+        synchronized(pendingPreviews) {
+            pendingPreviews[uploadId] = PreviewEntry(bytes)
+            // Tope duro de memoria: las más viejas se descartan
+            while (pendingPreviews.size > MAX_PENDING_PREVIEWS) {
+                pendingPreviews.remove(pendingPreviews.keys.first())
+            }
+        }
+    }
+
+    override suspend fun pendingPreview(transferId: String): ByteArray? =
+        synchronized(pendingPreviews) { pendingPreviews[transferId]?.bytes }
 
     override suspend fun start() = startMutex.withLock {
         if (engine != null) return@withLock
@@ -225,6 +259,67 @@ class KtorFileReceiver(
                 // Debug helper - in production remove; shows that server is up
                 call.respondText("""{"requiresPin":true}""", io.ktor.http.ContentType.Application.Json)
             }
+            post("/pair") {
+                // Handshake bidireccional: valida el PIN, guarda al emisor como
+                // confiable (AUTO) y devuelve identidad propia para que el otro
+                // lado también confíe. Emparejar desde UN dispositivo alcanza.
+                val pin = call.request.header(HEADER_PIN) ?: call.request.queryParameters["pin"]
+                if (!pairingManager.validate(pin)) {
+                    call.respond(HttpStatusCode.Unauthorized, "Invalid PIN")
+                    return@post
+                }
+                val bodyText = runCatching { call.receiveChannel().readRemaining().readByteArray().decodeToString() }.getOrNull().orEmpty()
+                val identity = runCatching {
+                    Json.parseToJsonElement(bodyText).jsonObject.let {
+                        PairIdentity(
+                            id = it["deviceId"]?.jsonPrimitive?.contentOrNull,
+                            name = it["name"]?.jsonPrimitive?.contentOrNull,
+                        )
+                    }
+                }.getOrNull()
+                if (identity == null || identity.id.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, "deviceId required")
+                    return@post
+                }
+                val peer = call.request.local.remoteHost
+                trustedDevices?.remember(
+                    deviceId = identity.id,
+                    name = identity.name ?: peer,
+                    host = peer,
+                    pin = null,
+                    policy = TrustPolicy.AUTO,
+                )
+                println("[Ignite][RCV] emparejado con ${identity.name} (${identity.id}) vía /pair")
+                call.respondText(
+                    Json.encodeToString(Beacon(deviceId = deviceInfo.deviceId, deviceName = deviceInfo.deviceName, port = TransferDefaults.PORT)),
+                    io.ktor.http.ContentType.Application.Json,
+                )
+            }
+            post("/preview") {
+                // Miniatura para el diálogo de aprobación: el emisor la manda
+                // justo antes del /upload. Best-effort en ambos lados.
+                val pin = call.request.header(HEADER_PIN) ?: call.request.queryParameters["pin"]
+                if (!pairingManager.validate(pin)) {
+                    call.respond(HttpStatusCode.Unauthorized, "Invalid PIN")
+                    return@post
+                }
+                val uploadId = call.request.queryParameters["uploadId"]?.takeIf { it.isNotBlank() }
+                if (uploadId == null) {
+                    call.respond(HttpStatusCode.BadRequest, "uploadId required")
+                    return@post
+                }
+                val channel = call.receiveChannel()
+                val out = java.io.ByteArrayOutputStream()
+                val buffer = ByteArray(DEFAULT_CHUNK_SIZE)
+                while (true) {
+                    val read = channel.readAvailable(buffer, 0, buffer.size)
+                    if (read == -1) break
+                    if (read > 0) out.write(buffer, 0, read)
+                }
+                storePendingPreview(uploadId, out.toByteArray())
+                println("[Ignite][RCV] preview recibida para upload=${uploadId.take(8)}… (${out.size()}B)")
+                call.respond(HttpStatusCode.OK)
+            }
             post("/upload") {
                 // 1) PIN validation
                 val pin = call.request.header(HEADER_PIN) ?: call.request.queryParameters["pin"]
@@ -239,8 +334,11 @@ class KtorFileReceiver(
                 val totalBytesHeader = call.request.header(HEADER_TOTAL_BYTES)?.toLongOrNull()
                 val totalBytes = totalBytesHeader ?: call.request.headers[HttpHeaders.ContentLength]?.toLongOrNull() ?: 0L
                 val peer = call.request.local.remoteHost
+                // Identidad del emisor (Ignite >= 1.1): habilita políticas de confianza
+                val peerDeviceId = call.request.header(HEADER_DEVICE_ID)?.takeIf { it.isNotBlank() }
+                val peerDeviceName = call.request.header(HEADER_DEVICE_NAME)?.takeIf { it.isNotBlank() }
                 println(
-                    "[Ignite][RCV] /upload de $peer: name=${requestedName ?: "?"} total=${totalBytes / 1024 / 1024}MB " +
+                    "[Ignite][RCV] /upload de $peer (${peerDeviceName ?: "?"}): name=${requestedName ?: "?"} total=${totalBytes / 1024 / 1024}MB " +
                         "offset=$offset sha=${expectedSha?.take(12)}… contentLength=${call.request.headers[HttpHeaders.ContentLength]}",
                 )
                 var savedFile: File? = null
@@ -256,25 +354,27 @@ class KtorFileReceiver(
                     }
                 }
 
-                // 3) Approval gate
+                // 3) Éxito idempotente para TODAS las políticas: si el archivo ya
+                //    llegó completo (respuesta perdida tras éxito), OK sin tocar disco.
                 val probeFileName = requestedName ?: "archivo"
                 // uploadId estable: reintentos del mismo archivo comparten aprobación
                 // (bug de duplicados: cada POST generaba una solicitud nueva)
                 val uploadId = call.request.header(HEADER_UPLOAD_ID)?.takeIf { it.isNotBlank() }
                     ?: "$peer-$probeFileName-${System.currentTimeMillis()}"
-                if (requiresApproval) {
-                    pruneCompleted()
+                pruneCompleted()
+                if (isRecentlyCompleted(uploadId)) {
+                    println("[Ignite][RCV] '$probeFileName' ya se recibió antes — OK idempotente (upload=${uploadId.take(8)}…)")
+                    call.respond(HttpStatusCode.OK)
+                    return@post
+                }
 
-                    // a) Ya completado hace poco (respuesta perdida tras éxito):
-                    //    éxito idempotente, sin tocar disco ni pedir aprobación.
-                    if (isRecentlyCompleted(uploadId)) {
-                        println("[Ignite][RCV] '$probeFileName' ya se recibió antes — OK idempotente (upload=${uploadId.take(8)}…)")
-                        call.respond(HttpStatusCode.OK)
-                        return@post
-                    }
-
-                    // b) Reanudación del mismo archivo en curso, o ya aprobado hace
-                    //    poco (corte de red a mitad): sigue derecho sin re-preguntar.
+                // 4) Approval gate — solo para pares con política ASK (o desconocidos).
+                val peerPolicy = peerDeviceId
+                    ?.let { runCatching { trustedDevices?.policyFor(it) }.getOrNull() }
+                    ?: TrustPolicy.ASK
+                if (requiresApproval && peerPolicy == TrustPolicy.ASK) {
+                    // Reanudación del mismo archivo en curso, o ya aprobado hace
+                    // poco (corte de red a mitad): sigue derecho sin re-preguntar.
                     val resuming = activeReceivingUploadId == uploadId || isRecentlyApproved(uploadId)
 
                     var pending = synchronized(pendingApprovals) { pendingApprovals[uploadId] }
@@ -286,14 +386,16 @@ class KtorFileReceiver(
                         if (busy) {
                             println("[Ignite][RCV] ocupado — rechazo inmediato de '$probeFileName' (upload=${uploadId.take(8)}…)")
                             _incomingEvents.tryEmit(
-                                IncomingEvent.Failed(probeFileName, peer, "El receptor tiene otra solicitud en curso"),
+                                IncomingEvent.Failed(probeFileName, peer, "El receptor tiene otra solicitud en curso", peerDeviceId),
                             )
                             call.respond(HttpStatusCode.Conflict, "El receptor ya está atendiendo otra solicitud. Esperá y volvé a enviar.")
                             return@post
                         }
                         pending = PendingApproval(transferId = uploadId)
                         synchronized(pendingApprovals) { pendingApprovals[uploadId] = pending }
-                        _incomingEvents.tryEmit(IncomingEvent.AwaitingApproval(probeFileName, peer, totalBytes, uploadId))
+                        _incomingEvents.tryEmit(
+                            IncomingEvent.AwaitingApproval(probeFileName, peer, totalBytes, uploadId, peerDeviceId, peerDeviceName),
+                        )
                     } else if (pending != null) {
                         // Mismo archivo reintentando: extiende la ventana, no apila prompts
                         println("[Ignite][RCV] reintento de '${probeFileName}' (upload=${uploadId.take(8)}…) — ventana extendida")
@@ -324,7 +426,7 @@ class KtorFileReceiver(
                 try {
                     runCatching {
                         val channel = call.receiveChannel()
-                        savedFile = receiveFile(channel, requestedName, peer, totalBytes, offset, expectedSha, uploadId)
+                        savedFile = receiveFile(channel, requestedName, peer, totalBytes, offset, expectedSha, uploadId, peerDeviceId)
                     }.onFailure { error ->
                         val name = savedFile?.name ?: requestedName ?: "archivo"
                         println("[Ignite][RCV] recepción falló '$name': ${error::class.simpleName}: ${error.message}")
@@ -345,7 +447,7 @@ class KtorFileReceiver(
                                 createdAt = System.currentTimeMillis(),
                             ),
                         )
-                        _incomingEvents.tryEmit(IncomingEvent.Failed(name, peer, error.message))
+                        _incomingEvents.tryEmit(IncomingEvent.Failed(name, peer, error.message, peerDeviceId))
                         // Re-lanzar solo si no hemos respondido ya
                         if (call.response.status() == null) throw error else return@post
                     }
@@ -370,6 +472,7 @@ class KtorFileReceiver(
         offset: Long,
         expectedSha256: String?,
         transferId: String,
+        peerDeviceId: String? = null,
     ): File {
         val fileName = requestedName
             ?: "received_${System.currentTimeMillis()}"
@@ -403,7 +506,7 @@ class KtorFileReceiver(
             createdAt = System.currentTimeMillis(),
         )
         repository.upsert(record)
-        _incomingEvents.tryEmit(IncomingEvent.Started(fileName, peer, totalBytes))
+        _incomingEvents.tryEmit(IncomingEvent.Started(fileName, peer, totalBytes, peerDeviceId))
         println("[Ignite][RCV] recibiendo '$fileName' → ${target.absolutePath} (offset=$offset total=${totalBytes / 1024 / 1024}MB)")
         val t0 = System.currentTimeMillis()
 
@@ -445,7 +548,7 @@ class KtorFileReceiver(
                         lastEmitted = fraction
                         repository.upsert(record.copy(progress = fraction))
                         _incomingEvents.tryEmit(
-                            IncomingEvent.Progress(fileName, peer, received, totalBytes, fraction),
+                            IncomingEvent.Progress(fileName, peer, received, totalBytes, fraction, peerDeviceId),
                         )
                     }
                     if (totalBytes > 0) {
@@ -465,7 +568,7 @@ class KtorFileReceiver(
             println("[Ignite][RCV] STREAM CORTADO '$fileName': $received/${expectedRemaining} bytes (faltan ${(expectedRemaining - received) / 1024 / 1024}MB)")
             repository.upsert(record.copy(status = Transfer.Status.FAILED, progress = 0f))
             _incomingEvents.tryEmit(
-                IncomingEvent.Failed(fileName, peer, "Conexión cortada a ${received * 100 / expectedRemaining}% — se reanuda al reintentar"),
+                IncomingEvent.Failed(fileName, peer, "Conexión cortada a ${received * 100 / expectedRemaining}% — se reanuda al reintentar", peerDeviceId),
             )
             throw IllegalStateException("Stream cortado: $received/$expectedRemaining bytes")
         }
@@ -478,7 +581,7 @@ class KtorFileReceiver(
                 println("[Ignite][RCV] SHA-256 MISMATCH '$fileName': esperado=${expectedSha256.take(12)}… real=${actual.take(12)}…")
                 target.delete()
                 repository.upsert(record.copy(status = Transfer.Status.FAILED, progress = 0f))
-                _incomingEvents.tryEmit(IncomingEvent.Failed(fileName, peer, "SHA-256 mismatch: esperado $expectedSha256, recibido $actual"))
+                _incomingEvents.tryEmit(IncomingEvent.Failed(fileName, peer, "SHA-256 mismatch: esperado $expectedSha256, recibido $actual", peerDeviceId))
                 throw IllegalStateException("SHA-256 verification failed")
             }
             println("[Ignite][RCV] SHA-256 OK '$fileName'")
@@ -489,7 +592,7 @@ class KtorFileReceiver(
         repository.upsert(
             record.copy(sizeBytes = received, status = Transfer.Status.COMPLETED, progress = 1f),
         )
-        _incomingEvents.tryEmit(IncomingEvent.Completed(fileName, peer, target.absolutePath, received))
+        _incomingEvents.tryEmit(IncomingEvent.Completed(fileName, peer, target.absolutePath, received, peerDeviceId))
         // Cleanup pending map
         synchronized(pendingApprovals) { pendingApprovals.remove(transferId) }
         return target
@@ -528,10 +631,16 @@ class KtorFileReceiver(
 
         /** Cuánto tiempo un uploadId completado recuerda serlo (éxito idempotente). */
         const val COMPLETED_TTL_MS = 5 * 60_000L
+
+        /** Tope de una miniatura individual y de la caché completa. */
+        const val MAX_PREVIEW_BYTES = 256 * 1024
+        const val MAX_PENDING_PREVIEWS = 8
         const val HEADER_PIN = "X-Ignite-Pin"
         const val HEADER_SHA256 = "X-Ignite-Sha256"
         const val HEADER_OFFSET = "X-Ignite-Offset"
         const val HEADER_TOTAL_BYTES = "X-Ignite-Total-Bytes"
         const val HEADER_UPLOAD_ID = "X-Ignite-Upload-Id"
+        const val HEADER_DEVICE_ID = "X-Ignite-Device-Id"
+        const val HEADER_DEVICE_NAME = "X-Ignite-Device-Name"
     }
 }

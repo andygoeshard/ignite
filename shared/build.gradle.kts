@@ -48,6 +48,7 @@ kotlin {
             implementation(libs.compose.material.icons.extended)
             implementation(libs.compose.uiToolingPreview)
             implementation(libs.androidx.lifecycle.viewmodelCompose)
+            implementation(libs.zxing.core)
             implementation(libs.androidx.lifecycle.runtimeCompose)
             implementation(libs.lifecycle.viewmodel.navigation3)
 
@@ -87,12 +88,16 @@ kotlin {
         jvmMain.dependencies {
             implementation(libs.ktor.client.cio)
             implementation(libs.ktor.server.netty)
+            implementation(libs.zxing.core)
         }
         androidMain.dependencies {
             implementation(libs.compose.uiTooling)
             implementation(libs.compose.uiToolingPreview)
             implementation(libs.ktor.client.okhttp)
             implementation(libs.ktor.server.cio)
+            implementation(libs.zxing.core)
+            implementation(libs.zxing.android.embedded)
+            implementation(libs.androidx.activity.compose)
         }
     }
 }

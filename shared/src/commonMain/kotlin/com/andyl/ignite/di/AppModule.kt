@@ -44,7 +44,10 @@ val appModule: Module = module {
         RoomTransferRepository(requireNotNull(get<IgniteDatabase>().transferDao()))
     }
 
-    single<FileSender> { KtorFileSender(get()) }
+    single<FileSender> { KtorFileSender(get(), get()) }
+    single<com.andyl.ignite.domain.ReceiverController> {
+        com.andyl.ignite.domain.ReceiverController(get(), get())
+    }
     single<FileReceiver> {
         KtorFileReceiver(
             storage = get(),
@@ -53,6 +56,7 @@ val appModule: Module = module {
             deviceInfo = get(),
             port = TransferDefaults.PORT,
             engineFactory = ::createServerEngine,
+            trustedDevices = get(),
         )
     }
 
@@ -68,6 +72,8 @@ val appModule: Module = module {
             pairingManager = get(),
             httpClient = get(),
             trustedDevices = get(),
+            receiverController = get(),
+            externalDrops = com.andyl.ignite.data.externalDropFlow(),
         )
     }
     viewModelOf(::HistoryViewModel)

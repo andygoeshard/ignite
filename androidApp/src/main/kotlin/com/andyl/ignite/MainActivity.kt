@@ -55,6 +55,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startTransferService() {
+        // Si está pausado (⏻), no hay notificación: ReceiverController manda.
+        val controller = runCatching {
+            org.koin.core.context.GlobalContext.get().get<com.andyl.ignite.domain.ReceiverController>()
+        }.getOrNull()
+        if (controller?.active?.value == false) return
         // El nombre real se actualizará cuando HomeViewModel llame a notifier.onIdle()
         TransferForegroundService.start(this)
     }

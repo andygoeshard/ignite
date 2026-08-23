@@ -17,5 +17,7 @@ class RoomTransferRepository(
 
     override suspend fun upsert(transfer: Transfer) = dao.upsert(transfer.toEntity())
 
+    override suspend fun delete(id: Long) = dao.deleteById(id)
+
     override suspend fun clearHistory() = dao.clearAll()
 }

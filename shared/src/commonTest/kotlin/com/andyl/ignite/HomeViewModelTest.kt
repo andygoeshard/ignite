@@ -18,7 +18,6 @@ import com.andyl.ignite.presentation.home.HomeEvent
 import com.andyl.ignite.presentation.home.IncomingUi
 import com.andyl.ignite.presentation.home.PendingFile
 import androidx.lifecycle.viewModelScope
-import io.github.vinceglb.filekit.FileKit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancel
@@ -42,7 +41,7 @@ class HomeViewModelTest {
     @BeforeTest
     fun setup() {
         Dispatchers.setMain(testDispatcher)
-        FileKit.init(appId = "com.andyl.ignite.test.vm")
+        initTestFileKit()
     }
 
     @AfterTest
@@ -130,5 +129,6 @@ class HomeViewModelTest {
         override suspend fun start() = Unit
         override suspend fun stop() = Unit
         override suspend fun decideApproval(transferId: String, approved: Boolean) = Unit
+        override suspend fun pendingPreview(transferId: String): ByteArray? = null
     }
 }

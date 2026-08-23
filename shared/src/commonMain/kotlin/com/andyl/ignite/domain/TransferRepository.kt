@@ -8,5 +8,6 @@ import com.andyl.ignite.domain.model.Transfer
 interface TransferRepository {
     fun observeTransfers(): kotlinx.coroutines.flow.Flow<List<Transfer>>
     suspend fun upsert(transfer: Transfer)
+    suspend fun delete(id: Long)
     suspend fun clearHistory()
 }

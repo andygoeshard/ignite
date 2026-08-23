@@ -4,15 +4,19 @@ import kotlinx.coroutines.flow.SharedFlow
 
 /**
  * Lifecycle events for a file being received from a peer.
+ * [peerDeviceId]/[peerDeviceName] viajan en headers desde Ignite 1.1; pueden
+ * ser null si el emisor es una versión vieja.
  */
 sealed interface IncomingEvent {
     val fileName: String
     val peerHost: String
+    val peerDeviceId: String?
 
     data class Started(
         override val fileName: String,
         override val peerHost: String,
         val totalBytes: Long,
+        override val peerDeviceId: String? = null,
     ) : IncomingEvent
 
     data class Progress(
@@ -21,6 +25,7 @@ sealed interface IncomingEvent {
         val receivedBytes: Long,
         val totalBytes: Long,
         val progress: Float,
+        override val peerDeviceId: String? = null,
     ) : IncomingEvent
 
     data class Completed(
@@ -28,12 +33,14 @@ sealed interface IncomingEvent {
         override val peerHost: String,
         val path: String,
         val sizeBytes: Long,
+        override val peerDeviceId: String? = null,
     ) : IncomingEvent
 
     data class Failed(
         override val fileName: String,
         override val peerHost: String,
         val message: String?,
+        override val peerDeviceId: String? = null,
     ) : IncomingEvent
 
     data class AwaitingApproval(
@@ -41,6 +48,9 @@ sealed interface IncomingEvent {
         override val peerHost: String,
         val totalBytes: Long,
         val transferId: String,
+        override val peerDeviceId: String? = null,
+        /** Nombre declarado por el emisor en el header de identidad. */
+        val peerDeviceName: String? = null,
     ) : IncomingEvent
 }
 
@@ -66,6 +76,12 @@ interface FileReceiver {
      * @param approved true to write to disk, false to reject with 403
      */
     suspend fun decideApproval(transferId: String, approved: Boolean)
+
+    /**
+     * Miniatura enviada por el emisor para la solicitud pendiente, si ya llegó.
+     * Null = no hay preview (o no es imagen/video).
+     */
+    suspend fun pendingPreview(transferId: String): ByteArray?
 
     /** Whether this receiver requires approval dialog before writing (default true) */
     val requiresApproval: Boolean

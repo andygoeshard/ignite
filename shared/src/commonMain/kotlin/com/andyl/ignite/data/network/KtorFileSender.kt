@@ -1,5 +1,7 @@
 package com.andyl.ignite.data.network
 
+import com.andyl.ignite.data.DeviceInfo
+import com.andyl.ignite.data.createThumbnail
 import com.andyl.ignite.domain.FileSender
 import com.andyl.ignite.domain.model.Device
 import io.ktor.client.HttpClient
@@ -23,11 +25,11 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import java.io.BufferedInputStream
-import java.io.File
-import java.io.FileInputStream
+import java.io.FileNotFoundException
 
 class KtorFileSender(
     private val client: HttpClient,
+    private val deviceInfo: DeviceInfo? = null,
     private val chunkSize: Int = DEFAULT_CHUNK_SIZE,
 ) : FileSender {
 
@@ -41,7 +43,7 @@ class KtorFileSender(
         // 1) Compute SHA-256 upfront (for integrity header)
         println("[Ignite][SND] inicio: '$fileName' (${sizeBytes / 1024 / 1024}MB) → ${target.host}:${target.port} pin=${pin != null}")
         val t0Sha = System.currentTimeMillis()
-        val sha256 = runCatching { sha256File(File(localPath)) }
+        val sha256 = runCatching { sha256Transfer(localPath) }
             .onFailure {
                 println("[Ignite][SND] sha256File falló para $localPath: ${it.message}")
                 it.printStackTrace()
@@ -53,6 +55,12 @@ class KtorFileSender(
         // en el receptor en vez de apilar solicitudes nuevas (bug de duplicados).
         val uploadId = sha256Hex("$fileName:$sizeBytes".encodeToByteArray()).take(16)
         println("[Ignite][SND] uploadId=$uploadId")
+
+        // 1.b) Miniatura best-effort para el diálogo de aprobación del receptor.
+        if (deviceInfo != null && isPreviewable(fileName)) {
+            runCatching { sendPreview(target, localPath, uploadId, pin) }
+                .onFailure { println("[Ignite][SND] preview falló (ignorado): ${it.message}") }
+        }
 
         // 2) Query resumption offset (best-effort, falls back to 0)
         var offset = 0L
@@ -126,18 +134,21 @@ class KtorFileSender(
 
             override suspend fun writeTo(channel: ByteWriteChannel) {
                 try {
-                    BufferedInputStream(FileInputStream(localPath), chunkSize).use { input ->
+                    // content:// (Android) o path plano (desktop) según plataforma.
+                    val input = com.andyl.ignite.data.openTransferStream(localPath)
+                    if (input == null) throw java.io.FileNotFoundException(localPath)
+                    BufferedInputStream(input, chunkSize).use { stream ->
                         if (offset > 0) {
                             var skipped = 0L
                             while (skipped < offset) {
-                                val s = input.skip(offset - skipped)
+                                val s = stream.skip(offset - skipped)
                                 if (s <= 0) break
                                 skipped += s
                             }
                         }
                         val buffer = ByteArray(chunkSize)
                         var read: Int
-                        while (input.read(buffer).also { read = it } != -1) {
+                        while (stream.read(buffer).also { read = it } != -1) {
                             if (read > 0) {
                                 channel.writeFully(buffer, 0, read)
                                 sent += read
@@ -166,6 +177,12 @@ class KtorFileSender(
             if (offset > 0) header(HEADER_OFFSET, offset.toString())
             header(HEADER_TOTAL_BYTES, sizeBytes.toString())
             header(HEADER_UPLOAD_ID, uploadId)
+            // Identidad: le permite al receptor aplicar su política de confianza
+            // (aceptar siempre / silencioso) sin preguntar.
+            if (deviceInfo != null) {
+                header(HEADER_DEVICE_ID, deviceInfo.deviceId)
+                header(HEADER_DEVICE_NAME, deviceInfo.deviceName)
+            }
             setBody(body)
         }
 
@@ -195,6 +212,23 @@ class KtorFileSender(
         }.getOrNull() ?: 0L
     }
 
+    private suspend fun sendPreview(target: Device, localPath: String, uploadId: String, pin: String?) {
+        val bytes = createThumbnail(localPath, PREVIEW_MAX_PX) ?: return
+        println("[Ignite][SND] preview generada (${bytes.size}B) para upload=${uploadId.take(8)}…")
+        val response = client.post("http://${target.host}:${target.port}/preview") {
+            url.parameters.append("uploadId", uploadId)
+            if (pin != null) header(HEADER_PIN, pin)
+            header(HttpHeaders.ContentType, "image/jpeg")
+            setBody(bytes)
+        }
+        println("[Ignite][SND] preview respuesta: ${response.status}")
+    }
+
+    private fun isPreviewable(fileName: String): Boolean {
+        val name = fileName.lowercase()
+        return PREVIEWABLE_EXTS.any { name.endsWith(it) }
+    }
+
     private companion object {
         const val DEFAULT_CHUNK_SIZE = 64 * 1024
         const val HEADER_PIN = "X-Ignite-Pin"
@@ -202,5 +236,16 @@ class KtorFileSender(
         const val HEADER_OFFSET = "X-Ignite-Offset"
         const val HEADER_TOTAL_BYTES = "X-Ignite-Total-Bytes"
         const val HEADER_UPLOAD_ID = "X-Ignite-Upload-Id"
+        const val HEADER_DEVICE_ID = "X-Ignite-Device-Id"
+        const val HEADER_DEVICE_NAME = "X-Ignite-Device-Name"
+
+        /** Lado más largo de la miniatura enviada al receptor. */
+        const val PREVIEW_MAX_PX = 512
+
+        /** Extensiones con preview: imágenes (todas las plataformas) + video (solo Android genera frame). */
+        val PREVIEWABLE_EXTS = listOf(
+            ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp",
+            ".mp4", ".mov", ".mkv", ".webm", ".avi",
+        )
     }
 }

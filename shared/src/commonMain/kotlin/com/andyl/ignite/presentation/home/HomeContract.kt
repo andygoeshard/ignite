@@ -1,5 +1,6 @@
 package com.andyl.ignite.presentation.home
 
+import com.andyl.ignite.domain.TrustPolicy
 import com.andyl.ignite.domain.model.Device
 import com.andyl.ignite.domain.model.TransferError
 
@@ -22,6 +23,12 @@ sealed interface IncomingUi {
         val peerName: String,
         val sizeBytes: Long,
         val transferId: String,
+        /** IP del emisor (para "aceptar siempre" si no hay deviceId). */
+        val peerHost: String = "",
+        /** Identidad declarada por el emisor (header X-Ignite-Device-Id). */
+        val peerDeviceId: String? = null,
+        /** Miniatura JPEG enviada por el emisor; null = mostrar icono genérico. */
+        val previewBytes: ByteArray? = null,
         /** El usuario eligió "Más tarde": el diálogo se cierra, queda el banner. */
         val deferred: Boolean = false,
         /** Límite (epoch ms) en que la conexión se corta si no hay decisión. */
@@ -108,11 +115,21 @@ sealed interface HomeEvent {
     data class OnTargetPinChanged(val pin: String) : HomeEvent
     data object OnRegeneratePin : HomeEvent
     data object OnApproveIncoming : HomeEvent
+    /** Aprobar y marcar al emisor como "aceptar siempre" (momento AirDrop). */
+    data class OnApproveIncomingAlways(val deviceId: String) : HomeEvent
     data object OnRejectIncoming : HomeEvent
     data object OnIncomingDeferred : HomeEvent
     data class OnForgetDevice(val deviceId: String, val name: String) : HomeEvent
+    /** Rota la política de recepción de un par: ASK → AUTO → SILENT → ASK. */
+    data class OnCycleDevicePolicy(val deviceId: String) : HomeEvent
     data object OnTogglePinDialog : HomeEvent
+    /** Mostrar el QR de emparejamiento de este dispositivo. */
+    data object OnShowPairQr : HomeEvent
+    /** El escáner devolvió el contenido crudo de un QR (payload o basura). */
+    data class OnQrScanned(val raw: String) : HomeEvent
     data class OnManualIpChanged(val ip: String) : HomeEvent
+    /** Pausar/reactivar el receptor (dejar de estar visible y de aceptar archivos). */
+    data object OnToggleReceiverActive : HomeEvent
     data object OnManualConnect : HomeEvent
     data object OnCancelSend : HomeEvent
     data object OnDismissInterrupted : HomeEvent
@@ -131,6 +148,10 @@ data class HomeState(
     val showWelcome: Boolean = false,
     val showProfileDialog: Boolean = false,
     val showPinDialog: Boolean = false,
+    /** Diálogo con el QR de emparejamiento propio. */
+    val showPairQrDialog: Boolean = false,
+    /** Receptor encendido: false = invisible en la red y no acepta archivos. */
+    val receiverActive: Boolean = true,
     val myPin: String = "",
     val targetPin: String = "",
     val manualIp: String = "",
@@ -143,6 +164,8 @@ data class HomeState(
     val trustedIds: Set<String> = emptySet(),
     /** Nombre del dispositivo cuyo PIN se precargó automáticamente. */
     val pinRememberedFor: String? = null,
+    /** Política de recepción por deviceId (solo pares confiables). */
+    val devicePolicies: Map<String, TrustPolicy> = emptyMap(),
 ) {
     val canSend: Boolean
         get() = selectedDevice != null &&

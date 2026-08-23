@@ -14,6 +14,9 @@ interface TransferDao {
     @Query("SELECT * FROM transfers ORDER BY createdAt DESC")
     fun observeAll(): Flow<List<TransferEntity>>
 
+    /** Borra una transferencia puntual del historial. */
+    suspend fun deleteById(id: Long)
+
     @Query("DELETE FROM transfers")
     suspend fun clearAll()
 }

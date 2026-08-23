@@ -1,20 +1,33 @@
 package com.andyl.ignite.data.db
 
 import android.content.Context
+import io.github.vinceglb.filekit.FileKit
+import io.github.vinceglb.filekit.filesDir
+import io.github.vinceglb.filekit.path
+import java.io.File
 
 /**
- * Holds the application [Context] so that the Room database can be built lazily
+ * Holds the application [Context] so that platform storage can be built lazily
  * without threading Context through the shared DI graph.
  */
 object AndroidContextHolder {
     lateinit var context: Context
 }
 
-// Room KSP disabled for now to unblock Android — usa Noop dao en memoria.
-// Para persistencia real, reactivar @Database y Room.databaseBuilder con KSP 2.4.10-2.0.2
+/**
+ * Historial persistente: JSON plano vía [JsonTransferDao] (Room/KSP sigue
+ * deshabilitado; esto sobrevive reinicios igual).
+ */
 actual class IgniteDatabase {
-    private val noop = NoopTransferDao()
-    actual fun transferDao(): TransferDao = noop
+    private val file = File(FileKit.filesDir.path, "transfer_history.json")
+    private val dao = JsonTransferDao(
+        readRaw = { file.takeIf { it.exists() }?.readText() },
+        writeRaw = { text ->
+            file.parentFile?.mkdirs()
+            file.writeText(text)
+        },
+    )
+    actual fun transferDao(): TransferDao = dao
 }
 
 actual fun createDatabase(): IgniteDatabase = IgniteDatabase()

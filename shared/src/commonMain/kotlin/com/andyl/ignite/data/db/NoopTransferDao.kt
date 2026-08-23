@@ -11,5 +11,6 @@ import kotlinx.coroutines.flow.flowOf
 class NoopTransferDao : TransferDao {
     override suspend fun upsert(entity: TransferEntity) = Unit
     override fun observeAll(): Flow<List<TransferEntity>> = flowOf(emptyList())
+    override suspend fun deleteById(id: Long) = Unit
     override suspend fun clearAll() = Unit
 }

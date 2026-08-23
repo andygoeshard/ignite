@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -124,7 +125,7 @@ fun HistoryScreen(
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(state.transfers, key = { it.id }) { transfer ->
-                    TransferRow(transfer, now)
+                    TransferRow(transfer, now, onDelete = { onEvent(HistoryEvent.OnDeleteTransfer(transfer.id)) })
                     HorizontalDivider()
                 }
             }
@@ -151,7 +152,7 @@ fun HistoryScreen(
 }
 
 @Composable
-private fun TransferRow(transfer: Transfer, now: Long) {
+private fun TransferRow(transfer: Transfer, now: Long, onDelete: () -> Unit) {
     val isSent = transfer.direction == Transfer.Direction.SENT
     Row(
         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
@@ -178,6 +179,15 @@ private fun TransferRow(transfer: Transfer, now: Long) {
             )
         }
         TransferStatusBadge(transfer)
+        // Botoncito para borrar esta entrada del historial (el archivo no se toca)
+        IconButton(onClick = onDelete, modifier = Modifier.size(32.dp)) {
+            Icon(
+                Icons.Default.Close,
+                contentDescription = "Borrar del historial",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp),
+            )
+        }
     }
 }
 

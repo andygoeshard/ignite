@@ -34,7 +34,15 @@ class HistoryViewModel(
     override fun onEventImpl(event: HistoryEvent) {
         when (event) {
             HistoryEvent.OnRefresh -> observeTransfers()
+            is HistoryEvent.OnDeleteTransfer -> deleteTransfer(event.id)
             HistoryEvent.OnClearHistory -> clearHistory()
+        }
+    }
+
+    private fun deleteTransfer(id: Long) {
+        viewModelScope.launch {
+            repository.delete(id)
+            sendEffect(HistoryEffect.ShowSnackbar("Entrada borrada"))
         }
     }
 

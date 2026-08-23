@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Ignite habla HTTP plano en la red local (descubrimiento UDP + transferencias
+  Ktor) hacia IPs privadas arbitrarias (la desktop puede tener cualquier
+  192.168.x / 10.x / 172.16-31.x). No hay forma de expresar rangos con
+  network_security_config, así que se habilita cleartext global: la app no se
+  comunica con ningún servidor de internet.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

@@ -73,4 +73,51 @@ class TrustedDevicesTest {
         store.remember("dev-1", "Notebook", "192.168.1.5", "123456")
         assertEquals("123456", store.pinFor("dev-1")?.pin)
     }
+
+    @Test
+    fun policy_defaults_to_ask_for_unknown_devices() {
+        val (store, _) = createStore()
+        assertEquals(com.andyl.ignite.domain.TrustPolicy.ASK, store.policyFor("fantasma"))
+    }
+
+    @Test
+    fun set_policy_roundtrip_persists() {
+        val (store, readRaw) = createStore()
+        store.remember("dev-1", "Notebook", "192.168.1.5", "123456")
+        assertEquals(com.andyl.ignite.domain.TrustPolicy.ASK, store.policyFor("dev-1"))
+
+        assertEquals(
+            com.andyl.ignite.domain.TrustPolicy.AUTO,
+            store.setPolicy("dev-1", com.andyl.ignite.domain.TrustPolicy.AUTO)?.policy,
+        )
+        // Releer desde el "disco" (el mismo raw) confirma persistencia
+        assertEquals(com.andyl.ignite.domain.TrustPolicy.AUTO, store.policyFor("dev-1"))
+        assertTrue(readRaw().contains("AUTO"))
+
+        store.setPolicy("dev-1", com.andyl.ignite.domain.TrustPolicy.SILENT)
+        assertEquals(com.andyl.ignite.domain.TrustPolicy.SILENT, store.policyFor("dev-1"))
+        // El PIN sobrevive al cambio de política
+        assertEquals("123456", store.pinFor("dev-1")?.pin)
+    }
+
+    @Test
+    fun set_policy_on_unknown_device_fails_honestly() {
+        val (store, _) = createStore()
+        assertNull(store.setPolicy("fantasma", com.andyl.ignite.domain.TrustPolicy.AUTO))
+    }
+
+    @Test
+    fun remember_without_pin_creates_receive_only_trust() {
+        val (store, _) = createStore()
+        store.remember(
+            deviceId = "dev-qr",
+            name = "Celu por QR",
+            host = "192.168.1.9",
+            pin = null,
+            policy = com.andyl.ignite.domain.TrustPolicy.AUTO,
+        )
+        assertTrue(store.isTrusted("dev-qr"))
+        assertNull(store.pinFor("dev-qr")?.pin)
+        assertEquals(com.andyl.ignite.domain.TrustPolicy.AUTO, store.policyFor("dev-qr"))
+    }
 }

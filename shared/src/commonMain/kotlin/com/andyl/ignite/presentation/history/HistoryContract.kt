@@ -4,6 +4,7 @@ import com.andyl.ignite.domain.model.Transfer
 
 sealed interface HistoryEvent {
     data object OnRefresh : HistoryEvent
+    data class OnDeleteTransfer(val id: Long) : HistoryEvent
     data object OnClearHistory : HistoryEvent
 }
 

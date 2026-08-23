@@ -23,6 +23,8 @@ turbine = "1.2.1"
 materialIcons = "1.7.3"
 navigation3 = "1.1.1"
 room = "2.8.4"
+zxing-core = "3.5.3"
+zxing-android-embedded = "4.3.0"
 
 [libraries]
 kotlin-test = { module = "org.jetbrains.kotlin:kotlin-test", version.ref = "kotlin" }
@@ -85,6 +87,10 @@ lifecycle-viewmodel-navigation3 = { module = "org.jetbrains.androidx.lifecycle:l
 filekit-core = { module = "io.github.vinceglb:filekit-core", version.ref = "filekit" }
 filekit-dialogs = { module = "io.github.vinceglb:filekit-dialogs", version.ref = "filekit" }
 filekit-dialogs-compose = { module = "io.github.vinceglb:filekit-dialogs-compose", version.ref = "filekit" }
+
+# ZXing (generación de QR en shared, escaneo en Android)
+zxing-core = { module = "com.google.zxing:core", version.ref = "zxing-core" }
+zxing-android-embedded = { module = "com.journeyapps:zxing-android-embedded", version.ref = "zxing-android-embedded" }
 
 # Testing
 turbine = { module = "app.cash.turbine:turbine", version.ref = "turbine" }

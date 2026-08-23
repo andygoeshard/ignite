@@ -1,6 +1,8 @@
 package com.andyl.ignite.data
 
 import com.andyl.ignite.domain.TrustedDevices
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import io.github.vinceglb.filekit.FileKit
 import io.github.vinceglb.filekit.filesDir
 import io.github.vinceglb.filekit.path
@@ -88,3 +90,44 @@ actual fun createTrustedDevices(): TrustedDevices {
         },
     )
 }
+
+/** Miniatura JPEG vía ImageIO (solo imágenes; video no soportado en JVM puro). */
+actual fun createThumbnail(path: String, maxPx: Int): ByteArray? = runCatching {
+    val source = File(path)
+    if (!source.exists() || source.length() == 0L) return@runCatching null
+    val img = javax.imageio.ImageIO.read(source) ?: return@runCatching null
+    val scale = minOf(1f, maxPx.toFloat() / maxOf(img.width, img.height).coerceAtLeast(1))
+    val w = (img.width * scale).toInt().coerceIn(1, maxPx)
+    val h = (img.height * scale).toInt().coerceIn(1, maxPx)
+    val out = java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB)
+    val g = out.createGraphics()
+    g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR)
+    g.drawImage(img, 0, 0, w, h, null)
+    g.dispose()
+    val bytes = java.io.ByteArrayOutputStream().use { buffer ->
+        javax.imageio.ImageIO.write(out, "jpg", buffer)
+        buffer.toByteArray()
+    }
+    bytes.takeIf { it.isNotEmpty() }
+}.getOrNull()
+
+/** Decode de miniaturas vía Skia (desktop). */
+actual fun decodePreview(bytes: ByteArray): ImageBitmap? = runCatching {
+    org.jetbrains.skia.Image.makeFromEncoded(bytes).toComposeImageBitmap()
+}.getOrNull()
+
+/** QR vía ZXing → BufferedImage → PNG → Skia. */
+actual fun generateQr(content: String, sizePx: Int): ImageBitmap? = runCatching {
+    val modules = com.andyl.ignite.data.qrModules(content) ?: return@runCatching null
+    // Fondo blanco OPACO + zona de silencio de 4 módulos: sin esto el QR es
+    // negro sobre el surface oscuro del diálogo y no se ve nada.
+    val img = java.awt.image.BufferedImage(sizePx, sizePx, java.awt.image.BufferedImage.TYPE_INT_RGB)
+    val total = com.andyl.ignite.data.forEachQrPixel(modules, sizePx) { x, y, isDark ->
+        img.setRGB(x, y, if (isDark) 0xFF000000.toInt() else 0xFFFFFFFF.toInt())
+    }
+    val png = java.io.ByteArrayOutputStream().use { buffer ->
+        javax.imageio.ImageIO.write(img.getSubimage(0, 0, total, total), "png", buffer)
+        buffer.toByteArray()
+    }
+    org.jetbrains.skia.Image.makeFromEncoded(png).toComposeImageBitmap()
+}.getOrNull()

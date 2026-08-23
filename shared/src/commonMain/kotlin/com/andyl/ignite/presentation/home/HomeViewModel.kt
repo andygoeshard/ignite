@@ -12,13 +12,19 @@ import com.andyl.ignite.domain.IncomingEvent
 import com.andyl.ignite.domain.PairingManager
 import com.andyl.ignite.domain.TransferNotifier
 import com.andyl.ignite.domain.TransferRepository
+import com.andyl.ignite.domain.TrustPolicy
 import com.andyl.ignite.domain.TrustedDevices
 import com.andyl.ignite.domain.model.Device
 import com.andyl.ignite.domain.model.Transfer
 import com.andyl.ignite.domain.model.TransferError
 import com.andyl.ignite.presentation.MviViewModel
 import io.ktor.client.request.get
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
+import io.ktor.http.contentType
 import kotlinx.coroutines.Job
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.delay
@@ -44,6 +50,9 @@ class HomeViewModel(
     private val httpClient: io.ktor.client.HttpClient? = null,
     private val enablePrune: Boolean = true,
     private val trustedDevices: TrustedDevices? = null,
+    private val receiverController: com.andyl.ignite.domain.ReceiverController? = null,
+    /** Drops de la ventana drop zone (desktop); null en Android. */
+    externalDrops: kotlinx.coroutines.flow.Flow<List<String>>? = null,
 ) : MviViewModel<HomeEvent, HomeState, HomeEffect>() {
 
     private val _devices = MutableStateFlow<List<Device>>(emptyList())
@@ -55,7 +64,7 @@ class HomeViewModel(
     private var approvalTimerJob: Job? = null
 
     override fun initialState(): HomeState {
-        val trustedIds = runCatching { trustedDevices?.all().orEmpty().map { it.deviceId }.toSet() }.getOrDefault(emptySet())
+        val trusted = runCatching { trustedDevices?.all().orEmpty() }.getOrDefault(emptyList())
         return HomeState(
             deviceName = runCatching { deviceInfo.deviceName }.getOrDefault(""),
             localIp = getLocalIp(),
@@ -63,7 +72,8 @@ class HomeViewModel(
             downloadPath = runCatching { storage.receiveDir() }.getOrDefault(""),
             canChooseDownloadDir = supportsCustomDownloadDir,
             myPin = runCatching { pairingManager.getPin() }.getOrDefault(""),
-            trustedIds = trustedIds,
+            trustedIds = trusted.map { it.deviceId }.toSet(),
+            devicePolicies = trusted.associate { it.deviceId to it.policy },
         )
     }
 
@@ -104,6 +114,31 @@ class HomeViewModel(
         if (enablePrune) pruneStaleDevices()
         collectIncomingEvents()
         recoverInterrupted()
+        observeReceiverPower()
+        externalDrops?.onEach { paths -> onExternalDrop(paths) }?.launchIn(viewModelScope)
+    }
+
+    /** Fase 2a: archivos soltados en la drop zone → cola + envío automático. */
+    private fun onExternalDrop(paths: List<String>) {
+        var added = 0
+        paths.forEach { path ->
+            val meta = runCatching { com.andyl.ignite.data.transferMeta(path) }.getOrNull() ?: return@forEach
+            addFile(com.andyl.ignite.presentation.home.PendingFile(path, meta.first, meta.second))
+            added++
+        }
+        if (added == 0) return
+        if (state.value.selectedDevice != null) {
+            send()
+        } else {
+            showNote("$added archivo(s) listos — elegí un dispositivo")
+        }
+    }
+
+    /** El estado ⏻ vive en ReceiverController: la UI refleja cambios hechos desde el tray. */
+    private fun observeReceiverPower() {
+        receiverController?.active?.onEach { active ->
+            updateState { it.copy(receiverActive = active) }
+        }?.launchIn(viewModelScope)
     }
 
     /**
@@ -204,15 +239,38 @@ class HomeViewModel(
                             state.copy(
                                 incoming = IncomingUi.AwaitingApproval(
                                     fileName = event.fileName,
-                                    peerName = peerName(event.peerHost),
+                                    peerName = event.peerDeviceName?.takeIf { it.isNotBlank() } ?: peerName(event.peerHost),
                                     sizeBytes = event.totalBytes,
                                     transferId = event.transferId,
+                                    peerHost = event.peerHost,
+                                    peerDeviceId = event.peerDeviceId,
                                     deferred = false,
                                     expiresAtMillis = System.currentTimeMillis() + APPROVAL_WINDOW_MS,
                                 ),
                             )
                         }
-                        showNote("«${event.fileName}» de ${peerName(event.peerHost)} quiere enviarte un archivo")
+                        showNote("«${event.fileName}» de ${event.peerDeviceName?.takeIf { it.isNotBlank() } ?: peerName(event.peerHost)} quiere enviarte un archivo")
+
+                        // La miniatura puede haber llegado antes que el upload; si no,
+                        // reintenta un par de veces antes de rendirse (icono genérico).
+                        val transferId = event.transferId
+                        viewModelScope.launch {
+                            repeat(PREVIEW_POLL_ATTEMPTS) {
+                                val bytes = runCatching { receiver.pendingPreview(transferId) }.getOrNull()
+                                if (bytes != null) {
+                                    updateState { state ->
+                                        val current = state.incoming as? IncomingUi.AwaitingApproval
+                                        if (current?.transferId == transferId) {
+                                            state.copy(incoming = current.copy(previewBytes = bytes))
+                                        } else {
+                                            state
+                                        }
+                                    }
+                                    return@launch
+                                }
+                                delay(PREVIEW_POLL_MS)
+                            }
+                        }
                     }
 
                     is IncomingEvent.Started -> {
@@ -225,7 +283,7 @@ class HomeViewModel(
                                 ),
                             )
                         }
-                        runCatching { notifier.onReceiving(event.fileName, 0, event.totalBytes, 0f) }
+                        notifyIncoming(event.peerDeviceId) { notifier.onReceiving(event.fileName, 0, event.totalBytes, 0f) }
                     }
 
                     is IncomingEvent.Progress -> {
@@ -243,7 +301,9 @@ class HomeViewModel(
                                 state
                             }
                         }
-                        runCatching { notifier.onReceiving(event.fileName, event.receivedBytes, event.totalBytes, event.progress) }
+                        notifyIncoming(event.peerDeviceId) {
+                            notifier.onReceiving(event.fileName, event.receivedBytes, event.totalBytes, event.progress)
+                        }
                     }
 
                     is IncomingEvent.Completed -> {
@@ -257,7 +317,7 @@ class HomeViewModel(
                                     ).distinctBy { it.path }.take(MAX_RECENT),
                             )
                         }
-                        runCatching { notifier.onCompleted(event.fileName, isSending = false) }
+                        notifyIncoming(event.peerDeviceId) { notifier.onCompleted(event.fileName, isSending = false) }
                     }
 
                     is IncomingEvent.Failed -> {
@@ -273,6 +333,18 @@ class HomeViewModel(
 
     private fun peerName(host: String): String =
         _devices.value.firstOrNull { it.host == host }?.name ?: host
+
+    /** Política de recepción vigente para un par (ASK si es desconocido). */
+    private fun policyOf(peerDeviceId: String?): TrustPolicy =
+        peerDeviceId
+            ?.let { runCatching { trustedDevices?.policyFor(it) }.getOrNull() }
+            ?: TrustPolicy.ASK
+
+    /** SILENT = sin ruido de sistema; el progreso in-app queda. */
+    private fun notifyIncoming(silentPeerId: String?, block: () -> Unit) {
+        if (policyOf(silentPeerId) == TrustPolicy.SILENT) return
+        runCatching { block() }
+    }
 
     override fun onEventImpl(event: HomeEvent) {
         when (event) {
@@ -292,10 +364,20 @@ class HomeViewModel(
             is HomeEvent.OnTargetPinChanged -> updateState { it.copy(targetPin = event.pin.filter { c -> c.isDigit() }.take(6)) }
             HomeEvent.OnRegeneratePin -> regeneratePin()
             HomeEvent.OnApproveIncoming -> decideApproval(true)
+            is HomeEvent.OnApproveIncomingAlways -> approveAndTrust(event.deviceId)
             HomeEvent.OnRejectIncoming -> decideApproval(false)
             HomeEvent.OnIncomingDeferred -> deferApproval()
             is HomeEvent.OnForgetDevice -> forgetDevice(event.deviceId, event.name)
+            is HomeEvent.OnCycleDevicePolicy -> cyclePolicy(event.deviceId)
             HomeEvent.OnTogglePinDialog -> updateState { it.copy(showPinDialog = !it.showPinDialog, myPin = runCatching { pairingManager.getPin() }.getOrDefault(it.myPin)) }
+            HomeEvent.OnShowPairQr -> updateState {
+                it.copy(
+                    showPairQrDialog = !it.showPairQrDialog,
+                    myPin = runCatching { pairingManager.getPin() }.getOrDefault(it.myPin),
+                )
+            }
+            is HomeEvent.OnQrScanned -> viewModelScope.launch { pairFromQr(event.raw) }
+            HomeEvent.OnToggleReceiverActive -> viewModelScope.launch { toggleReceiver() }
             is HomeEvent.OnManualIpChanged -> updateState { it.copy(manualIp = event.ip.trim().take(45)) }
             HomeEvent.OnManualConnect -> viewModelScope.launch { connectManual() }
             HomeEvent.OnCancelSend -> cancelSend()
@@ -335,11 +417,12 @@ class HomeViewModel(
         updateState { state ->
             state.copy(
                 trustedIds = state.trustedIds - deviceId,
+                devicePolicies = state.devicePolicies - deviceId,
                 targetPin = if (state.selectedDevice?.id == deviceId) "" else state.targetPin,
                 pinRememberedFor = state.pinRememberedFor?.takeIf { state.selectedDevice?.id != deviceId },
             )
         }
-        showNote("Olvidaste a $name — va a pedir su PIN de nuevo")
+        showNote("Olvidaste a $name — va a pedir su PIN de nuevo y a preguntar antes de aceptar")
     }
 
     private fun decideApproval(approved: Boolean) {
@@ -350,6 +433,71 @@ class HomeViewModel(
         }
         updateState { it.copy(incoming = null) }
         showNote(if (approved) "Aceptaste «${pending.fileName}» — recibiendo…" else "Rechazaste «${pending.fileName}»")
+    }
+
+    /**
+     * Momento AirDrop: aprobar Y marcar al emisor para que la próxima entre
+     * sin preguntar (política AUTO).
+     */
+    private fun approveAndTrust(deviceId: String) {
+        val pending = state.value.incoming as? IncomingUi.AwaitingApproval ?: return
+        if (deviceId != pending.peerDeviceId) {
+            // Identidad desalineada: aprobación simple, sin tocar confianza.
+            decideApproval(true)
+            return
+        }
+        val ok = runCatching {
+            val existing = trustedDevices?.pinFor(deviceId)
+            if (existing != null) {
+                trustedDevices?.setPolicy(deviceId, TrustPolicy.AUTO) != null
+            } else {
+                trustedDevices?.remember(
+                    deviceId = deviceId,
+                    name = pending.peerName,
+                    host = pending.peerHost.ifBlank { "desconocido" },
+                    pin = null,
+                    policy = TrustPolicy.AUTO,
+                ) != null || true // remember() es Unit; la confianza quedó registrada igual
+            }
+        }.getOrDefault(false)
+        decideApproval(true)
+        if (ok) {
+            updateState { it.copy(trustedIds = it.trustedIds + deviceId, devicePolicies = it.devicePolicies + (deviceId to TrustPolicy.AUTO)) }
+            showNote("Listo — a partir de ahora ${pending.peerName} entra sin preguntar")
+        }
+    }
+
+    /** ASK → AUTO → SILENT → ASK sobre un dispositivo confiable. */
+    private fun cyclePolicy(deviceId: String) {
+        val current = state.value.devicePolicies[deviceId] ?: TrustPolicy.ASK
+        val next = when (current) {
+            TrustPolicy.ASK -> TrustPolicy.AUTO
+            TrustPolicy.AUTO -> TrustPolicy.SILENT
+            TrustPolicy.SILENT -> TrustPolicy.ASK
+        }
+        if (next == TrustPolicy.ASK) {
+            // Volver a preguntar = seguir confiado pero con prompt (pin recordado intacto)
+            val ok = runCatching { trustedDevices?.setPolicy(deviceId, TrustPolicy.ASK) != null }.getOrDefault(false)
+            if (!ok) {
+                showNote("Primero enviá o recibí algo de ese dispositivo")
+                return
+            }
+        } else {
+            val existing = runCatching { trustedDevices?.pinFor(deviceId) }.getOrNull()
+            if (existing == null) {
+                showNote("Todavía no hay confianza con ese dispositivo — enviale algo primero")
+                return
+            }
+            runCatching { trustedDevices?.setPolicy(deviceId, next) }
+        }
+        updateState { it.copy(devicePolicies = it.devicePolicies + (deviceId to next)) }
+        showNote(
+            when (next) {
+                TrustPolicy.ASK -> "Volverá a preguntarte antes de aceptar"
+                TrustPolicy.AUTO -> "Aceptará sus archivos sin preguntar"
+                TrustPolicy.SILENT -> "Modo silencioso: recibe todo sin avisar"
+            },
+        )
     }
 
     /**
@@ -372,8 +520,96 @@ class HomeViewModel(
         }
     }
 
-    private suspend fun connectManual() {
-        val ip = state.value.manualIp.trim()
+    /** Contenido del QR propio: identidad local + PIN actual + IP preferente. */
+    fun pairingQrContent(): String {
+        val payload = com.andyl.ignite.domain.model.PairingPayload(
+            id = runCatching { deviceInfo.deviceId }.getOrDefault(""),
+            name = runCatching { deviceInfo.deviceName }.getOrDefault("Ignite"),
+            host = state.value.localIp,
+            port = com.andyl.ignite.domain.model.TransferDefaults.PORT,
+            pin = state.value.myPin.ifBlank { runCatching { pairingManager.getPin() }.getOrDefault("") },
+        )
+        return json.encodeToString(payload)
+    }
+
+    /**
+     * Emparejamiento por QR (Fase 1d): escaneamos el código del otro, le
+     * hablamos a su /pair con nuestro PIN y, si valida, AMBOS lados quedan
+     * confiándose en AUTO — enviar y recibir sin preguntar jamás.
+     */
+    /**
+     * Pausar/reactivar el receptor: al pausar bajamos el server HTTP y el
+     * anuncio UDP, así desaparecemos de la lista del otro y no aceptamos nada.
+     * Igual que "Receiving Off" de AirDrop.
+     */
+    private suspend fun toggleReceiver() {
+        val controller = receiverController
+        if (controller == null) {
+            showNote("No se pudo cambiar el estado del receptor")
+            return
+        }
+        if (state.value.receiverActive) {
+            // Si hay una aprobación pendiente, la cancelamos para no colgar al emisor.
+            (state.value.incoming as? IncomingUi.AwaitingApproval)?.let { pending ->
+                runCatching { receiver.decideApproval(pending.transferId, false) }
+            }
+            updateState { it.copy(incoming = null) }
+            if (controller.pause()) showNote("Pausado — no recibís nada hasta que lo reactivés")
+            else showNote("Pausado con errores — revisá el log")
+        } else {
+            if (controller.resume()) showNote("Activo de nuevo")
+            else showNote("Reactivado con errores — revisá el log")
+        }
+    }
+
+    private suspend fun pairFromQr(raw: String) {
+        val client = httpClient ?: run {
+            showNote("El emparejamiento por QR no está disponible acá")
+            return
+        }
+        updateState { it.copy(showPairQrDialog = false) }
+        val payload = runCatching { json.decodeFromString<com.andyl.ignite.domain.model.PairingPayload>(raw) }.getOrNull()
+        if (payload == null || payload.id.isBlank() || payload.pin.length != 6) {
+            showNote("Ese QR no es de Ignite")
+            return
+        }
+        if (payload.id == deviceInfo.deviceId) {
+            showNote("¡Es tu propio código! Escaneá el de la otra máquina")
+            return
+        }
+        val response = kotlinx.coroutines.withTimeoutOrNull(PAIR_TIMEOUT_MS) {
+            runCatching {
+                client.post("http://${payload.host}:${payload.port}/pair?pin=${payload.pin}") {
+                    contentType(ContentType.Application.Json)
+                    setBody(json.encodeToString(mapOf("deviceId" to deviceInfo.deviceId, "name" to deviceInfo.deviceName)))
+                }.bodyAsText()
+            }.getOrNull()
+        }
+        if (response == null) {
+            showNote("${payload.name} no respondió — fijate que esté abierta y en la misma red")
+            return
+        }
+        val peer = runCatching { json.decodeFromString<com.andyl.ignite.domain.model.Beacon>(response) }.getOrNull()
+        // Confianza mutua: guardo al otro (con SU pin para poder enviarle ya)
+        runCatching {
+            trustedDevices?.remember(
+                deviceId = payload.id,
+                name = peer?.deviceName ?: payload.name,
+                host = payload.host,
+                pin = payload.pin,
+                policy = TrustPolicy.AUTO,
+            )
+        }
+        updateState { state ->
+            state.copy(
+                trustedIds = state.trustedIds + payload.id,
+                devicePolicies = state.devicePolicies + (payload.id to TrustPolicy.AUTO),
+            )
+        }
+        showNote("Emparejado con ${peer?.deviceName ?: payload.name} — se van a mandar todo sin preguntar")
+    }
+
+    private suspend fun connectManual() {        val ip = state.value.manualIp.trim()
         if (!isValidIp(ip)) {
             showNote("IP inválida: $ip")
             return
@@ -422,10 +658,17 @@ class HomeViewModel(
     }
 
     private fun rename(name: String) {
-        runCatching { deviceInfo.rename(name) }
+        val trimmed = name.trim()
+        // Vacío = no romper nada: cerramos sin tocar el nombre actual.
+        // (Antes rename("") borraba el nombre custom y volvía al default.)
+        if (trimmed.isEmpty() || trimmed == deviceInfo.deviceName) {
+            updateState { it.copy(showProfileDialog = false, showWelcome = false, deviceName = deviceInfo.deviceName) }
+            return
+        }
+        runCatching { deviceInfo.rename(trimmed) }
         val current = deviceInfo.deviceName
         updateState { it.copy(deviceName = current, showProfileDialog = false, showWelcome = false) }
-        showNote(if (name.isBlank()) "Nombre restaurado: $current" else "Ahora te ven como «$current»")
+        showNote("Ahora te ven como «$current»")
         runCatching { notifier.onIdle(current) }
     }
 
@@ -653,6 +896,13 @@ class HomeViewModel(
 
         /** Igual que el receptor: ventana total de "Más tarde". */
         const val APPROVAL_WINDOW_MS = 120_000L
+
+        /** Polling de la miniatura mientras el diálogo está abierto. */
+        const val PREVIEW_POLL_ATTEMPTS = 5
+        const val PREVIEW_POLL_MS = 150L
+
+        /** Timeout del handshake /pair. */
+        const val PAIR_TIMEOUT_MS = 4_000L
         val RETRY_BACKOFF_MS = longArrayOf(1_500L, 3_000L, 6_000L)
     }
 }
