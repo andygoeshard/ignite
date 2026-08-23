@@ -44,11 +44,14 @@ private val Muted = Color(0xFF6FA88A)
  * Preview de las marcas candidatas (ronda logo v2). Correr con:
  *   ./gradlew :desktopApp:run -DmainClass=com.andyl.ignite.BrandPreviewKt
  */
-fun main() = application {
-    Window(
-        onCloseRequest = ::exitApplication,
-        title = "Ignite · marcas v4 fueguitos",
-    ) {
+fun main() {
+    AppIcon.installTaskbarIcon()
+    application {
+        Window(
+            onCloseRequest = ::exitApplication,
+            title = "Ignite · marcas v4 fueguitos",
+            icon = AppIcon.painter,
+        ) {
         Surface(modifier = Modifier.fillMaxSize(), color = Bg) {
             Column(
                 modifier = Modifier
@@ -67,6 +70,7 @@ fun main() = application {
             }
         }
     }
+}
 }
 
 @Composable

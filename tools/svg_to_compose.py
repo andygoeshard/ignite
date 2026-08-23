@@ -472,8 +472,8 @@ def iter_pts(ops):
             i += 1
 
 
-def gradient_brush_kotlin(kept, vw, vh):
-    """Deduce direccion y colores del gradiente desde los paths, y emite el BRUSH."""
+def gradient_params(kept, vw, vh):
+    """Deduce (light_hex, dark_hex, start_xy, end_xy) del gradiente desde los paths."""
     stats = []
     for ops, fill in kept:
         pts = list(iter_pts(ops))
@@ -512,6 +512,12 @@ def gradient_brush_kotlin(kept, vw, vh):
         else:          # claro arriba
             start, end = (vw / 2, 0.0), (vw / 2, vh)
 
+    return light_hex, dark_hex, start, end
+
+
+def gradient_brush_kotlin(kept, vw, vh):
+    """Emite las constantes GRAD_* usadas por el tail animado."""
+    light_hex, dark_hex, start, end = gradient_params(kept, vw, vh)
     hot_hex = "".join(
         "%02X" % min(255, round(int(light_hex[k:k + 2], 16) * 0.7 + 255 * 0.3))
         for k in (0, 2, 4)
@@ -527,6 +533,46 @@ def gradient_brush_kotlin(kept, vw, vh):
     )
 
 
+def write_clean_svg(out_path, svg_paths, vw, vh, size_px, margin,
+                    light_hex, dark_hex, start, end):
+    """SVG limpio en canvas cuadrado: solo la llama con el degradado."""
+    k = size_px * (1.0 - 2.0 * margin) / max(vw, vh)
+    tx = (size_px - vw * k) / 2.0
+    ty = (size_px - vh * k) / 2.0
+
+    d_elems = []
+    for cmds, _fill in svg_paths:
+        parts = []
+        for cmd in cmds:
+            if cmd[0] == "M":
+                parts.append("M %s %s" % (fmt(cmd[1]), fmt(cmd[2])))
+            elif cmd[0] == "L":
+                parts.append("L %s %s" % (fmt(cmd[1]), fmt(cmd[2])))
+            elif cmd[0] == "C":
+                parts.append("C %s" % " ".join(fmt(v) for v in cmd[1:7]))
+            else:
+                parts.append("Z")
+        d_elems.append(" ".join(parts))
+
+    lines = [
+        '<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">'
+        % (size_px, size_px, size_px, size_px),
+        '  <defs>',
+        '    <linearGradient id="igniteGrad" gradientUnits="userSpaceOnUse"',
+        '        x1="%s" y1="%s" x2="%s" y2="%s">'
+        % (fmt(start[0]), fmt(start[1]), fmt(end[0]), fmt(end[1])),
+        '      <stop offset="0" stop-color="#%s"/>' % light_hex,
+        '      <stop offset="1" stop-color="#%s"/>' % dark_hex,
+        '    </linearGradient>',
+        '  </defs>',
+        '  <g transform="translate(%s %s) scale(%s)">' % (fmt(tx), fmt(ty), fmt(k)),
+    ]
+    for d in d_elems:
+        lines.append('    <path d="%s" fill="url(#igniteGrad)"/>' % d)
+    lines += ['  </g>', '</svg>', '']
+    Path(out_path).write_text("\n".join(lines), encoding="utf-8")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("input")
@@ -536,6 +582,10 @@ def main():
     ap.add_argument("--white-threshold", type=int, default=235)
     ap.add_argument("--no-gradient", action="store_true",
                     help="usa los colores planos del SVG en vez de un gradiente unico")
+    ap.add_argument("--emit-svg", default=None,
+                    help="ademas genera un SVG limpio cuadrado (para iconos)")
+    ap.add_argument("--svg-margin", type=float, default=0.08)
+    ap.add_argument("--svg-size", type=int, default=1024)
     args = ap.parse_args()
 
     text = Path(args.input).read_text(encoding="utf-8")
@@ -547,7 +597,7 @@ def main():
         if len(n) >= 4 and n[2] > n[0] and n[3] > n[1]:
             vw, vh = n[2] - n[0], n[3] - n[1]
 
-    kept, skipped_white, skipped_empty = [], 0, 0
+    kept, svg_cmds, skipped_white, skipped_empty = [], [], 0, 0
     for m in PATH_RE.finditer(text):
         el = m.group(0)
         dm = D_RE.search(el)
@@ -561,13 +611,15 @@ def main():
             skipped_white += 1
             continue
         try:
-            ops = to_ops(parse_path(dm.group(1)))
+            cmds = parse_path(dm.group(1))
+            ops = to_ops(cmds)
         except ValueError as e:
             sys.exit("ERROR en path #%s: %s" % (fill, e))
         if len(ops) < 4:
             skipped_empty += 1
             continue
         kept.append((ops, fill))
+        svg_cmds.append((cmds, fill))
 
     L = []
     w = L.append
@@ -650,6 +702,13 @@ def main():
         "OK: %d paths (%d blancos descartados, %d vacios), %d floats, viewBox %gx%g -> %s"
         % (len(kept), skipped_white, skipped_empty, total, vw, vh, out)
     )
+
+    if args.emit_svg:
+        light_hex, dark_hex, start, end = gradient_params(kept, vw, vh)
+        write_clean_svg(args.emit_svg, svg_cmds, vw, vh,
+                        args.svg_size, args.svg_margin,
+                        light_hex, dark_hex, start, end)
+        print("SVG limpio -> %s" % args.emit_svg)
 
 
 if __name__ == "__main__":
