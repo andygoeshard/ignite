@@ -29,7 +29,7 @@ Punto a punto, entre dispositivos de la misma red Wi-Fi.
 - 🕓 **Historial persistente** — todos los envíos y recepciones quedan registrados con Room.
 - 🔔 **Notificaciones nativas** — progreso en vivo tanto en Android como en Desktop.
 - 🎛️ **Accesibilidad** — respeta "reducir movimiento" del sistema (Android); listas con estados claros de carga/vacío/error y botón Reintentar.
-- 🌑 **Look cyberpunk** — verde neón sobre negro puro, esquinas cortadas, tipografía mono. La identidad del producto, no un modo.
+- 🌑 **Look cyberpunk** — verde neón sobre negro puro, tipografía mono, cards redondeadas y logo con vida propia. La identidad del producto, no un modo.
 
 > 🚀 "Ignite" nació para mover archivos grandes entre tus dispositivos sin subirlos a ningún lado.
 
@@ -47,6 +47,16 @@ Punto a punto, entre dispositivos de la misma red Wi-Fi.
 | 💉 DI | Koin 4.2 |
 | 🧭 Navegación | Navigation 3 |
 | 📁 File picker | FileKit 0.15 |
+
+---
+
+## 🎨 Branding (v1.0)
+
+El logo es la llama diseñada en Inkscape, trazada a vectores y convertida 1:1 a Compose:
+
+- **Pipeline**: el SVG (`tools/logo.svg`) se procesa con `tools/svg_to_compose.py`, que genera `FlameTraceMark` — ignora el raster incrustado, descarta los fondos blancos del trazado y pinta toda la silueta con un único degradado continuo (lima `#B2EB63` → verde bosque), sin bandas ni grietas.
+- **Logo vivo**: respira anclada a la base, el brillo pulsa con la respiración y un barrido de luz recorre la llama cada ~3s. `FlameTraceMark(animate = false)` la congela.
+- **Preview**: `./gradlew :desktopApp:run -DmainClass=com.andyl.ignite.BrandPreviewKt` muestra el logo y las marcas alternativas a todos los tamaños.
 
 ---
 
@@ -120,6 +130,7 @@ com.andyl.ignite
     ├── navigation/
     ├── home/                 # card héroe de transmisión + dispositivos + recepción
     ├── history/
+    ├── branding/             # FlameTraceMark (logo generado desde SVG) + marcas
     └── theme/                # paleta cyberpunk verde neón / negro
 ```
 

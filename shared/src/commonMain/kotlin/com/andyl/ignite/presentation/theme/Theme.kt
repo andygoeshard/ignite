@@ -1,7 +1,7 @@
 package com.andyl.ignite.presentation.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.shape.CutCornerShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
@@ -57,13 +57,13 @@ private val CyberColors = darkColorScheme(
     scrim = PureBlack,
 )
 
-/** Esquinas cortadas: el look terminal/cyberpunk en cards y botones. */
+/** Esquinas redondeadas y suaves: cards, botones, chips y diálogos. */
 private val CyberShapes = Shapes(
-    extraSmall = CutCornerShape(3.dp),
-    small = CutCornerShape(6.dp),
-    medium = CutCornerShape(10.dp),
-    large = CutCornerShape(14.dp),
-    extraLarge = CutCornerShape(22.dp),
+    extraSmall = RoundedCornerShape(8.dp),
+    small = RoundedCornerShape(12.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(20.dp),
+    extraLarge = RoundedCornerShape(28.dp),
 )
 
 /**

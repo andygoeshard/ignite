@@ -84,6 +84,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -832,11 +833,27 @@ private fun Header(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                text = "Ignite",
-                style = MaterialTheme.typography.headlineMedium,
-                modifier = Modifier.weight(1f),
-            )
+            Column(modifier = Modifier.weight(1f)) {
+                if (deviceName.isNotBlank()) {
+                    Text(
+                        text = "Visible en la red como",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = deviceName,
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
+                } else {
+                    Text(
+                        text = "Listo para compartir",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
             IconButton(onClick = onRefresh) {
                 val spin = rememberInfiniteTransition(label = "refresh-spin")
                 val angle by spin.animateFloat(
@@ -852,13 +869,6 @@ private fun Header(
                     modifier = Modifier.rotate(if (isScanning && !reduceMotion) angle else 0f),
                 )
             }
-        }
-        if (deviceName.isNotBlank()) {
-            Text(
-                text = "Visible en la red como «$deviceName»",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
         if (localIp.isNotBlank()) {
             Text(

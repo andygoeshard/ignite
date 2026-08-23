@@ -10,6 +10,7 @@ dependencies {
     implementation(project(":shared"))
 
     implementation(compose.desktop.currentOs)
+    implementation(compose.material3)
     implementation(libs.kotlinx.coroutinesSwing)
     implementation(libs.filekit.core)
     implementation(libs.koin.core)
