@@ -24,9 +24,11 @@ fun createHttpClient(): HttpClient = HttpClient {
     }
 
     install(HttpTimeout) {
-        connectTimeoutMillis = 5_000
+        connectTimeoutMillis = 10_000
         requestTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS // unlimited for large file uploads
-        socketTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS
+        // 45s sin flujo = conexión muerta (WiFi que se corta sin avisar).
+        // Un link de 0.5KB/s manda ~22KB por ventana: sigue vivo.
+        socketTimeoutMillis = 45_000
     }
 
     install(Logging) {

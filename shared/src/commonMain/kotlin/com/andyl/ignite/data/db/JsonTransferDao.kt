@@ -1,6 +1,11 @@
 package com.andyl.ignite.data.db
 
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,28 +48,56 @@ class JsonTransferDao(
         // id nuevo: max+1 (autoGenerate manual)
         val newId = if (entity.id == 0L) (current.maxOfOrNull { it.id } ?: 0L) + 1 else entity.id
         current.add(entity.copy(id = newId))
-        replaceSorted(current)
+        // Los ticks de progreso se coalescan; todo estado terminal persiste ya.
+        replaceSorted(current, forcePersist = entity.status != "IN_PROGRESS")
     }
 
     override fun observeAll(): Flow<List<TransferEntity>> = rows.asStateFlow()
 
     override suspend fun deleteById(id: Long) = mutex.withLock {
-        replaceSorted(rows.value.filterNot { it.id == id })
+        replaceSorted(rows.value.filterNot { it.id == id }, forcePersist = true)
     }
 
     override suspend fun clearAll() = mutex.withLock {
-        replaceSorted(emptyList())
+        replaceSorted(emptyList(), forcePersist = true)
     }
 
-    private fun replaceSorted(list: List<TransferEntity>) {
+    /**
+     * Escribe a disco como máximo una vez por [PERSIST_COALESCE_MS]: los ticks
+     * de progreso generan decenas de upserts por transferencia y serializar +
+     * reescribir todo el JSON en cada uno era puro churn de RAM/dispatcher.
+     * Cambios terminales o borrados persisten al instante.
+     */
+    private fun replaceSorted(list: List<TransferEntity>, forcePersist: Boolean) {
         val trimmed = list.sortedByDescending { it.createdAt }.take(MAX_ROWS)
         rows.value = trimmed
-        persist(trimmed)
+        persist(trimmed, forcePersist)
     }
 
-    private fun persist(list: List<TransferEntity>) {
-        runCatching {
-            writeRaw(json.encodeToString(list.map { it.toRow() }))
+    private var lastPersistAt = 0L
+    private var pendingPersist: kotlinx.coroutines.Job? = null
+
+    private fun persist(list: List<TransferEntity>, forcePersist: Boolean) {
+        val snapshot = json.encodeToString(list.map { it.toRow() })
+        val now = System.currentTimeMillis()
+        val sinceLast = now - lastPersistAt
+        if (forcePersist || sinceLast >= PERSIST_COALESCE_MS) {
+            pendingPersist?.cancel()
+            runCatching {
+                writeRaw(snapshot)
+                lastPersistAt = System.currentTimeMillis()
+            }
+        } else {
+            pendingPersist?.cancel()
+            pendingPersist = persistScope.launch {
+                delay(PERSIST_COALESCE_MS - sinceLast)
+                mutex.withLock {
+                    runCatching {
+                        writeRaw(json.encodeToString(rows.value.map { it.toRow() }))
+                        lastPersistAt = System.currentTimeMillis()
+                    }
+                }
+            }
         }
     }
 
@@ -76,6 +109,10 @@ class JsonTransferDao(
 
     private companion object {
         const val MAX_ROWS = 500
+
+        /** Coalescencia de escrituras del JSON (ticks de progreso). */
+        const val PERSIST_COALESCE_MS = 750L
+        private val persistScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     }
 }
 

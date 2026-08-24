@@ -40,7 +40,9 @@ android {
     }
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 + shrink de recursos: ~20-30% menos footprint y APK más chico.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

@@ -95,6 +95,13 @@ Hoy la confianza es binaria (PIN recordado o no) y `requiresApproval` es un bool
 
 Depende de: políticas por dispositivo (sin auto-trust esto sería peligroso).
 
+### Fixes post-1.1 (2026-08-23)
+- **Falso "no se pudo enviar"**: carrera de `callbackFlow` tras el 200 OK se confundía con fallo y disparaba reintentos. Progreso topeado a 99.9% hasta confirmación; éxito fuera del catch de errores.
+- **Android: carpeta de descargas visible**: los archivos recibidos se publican en **Download/Ignite** (MediaStore, sin permisos) o en la carpeta que elijas (SAF con permiso persistente). El receptor mantiene su buffer privado para resume/dedup.
+- **Android: "Cambiar carpeta" en perfil** ahora existe (SAF), antes estaba oculto.
+- **Android: abrir carpeta** desde un archivo recibido abre Descargas o el Files app según destino.
+- **Logs grepeables**: `[Ignite][ERROR]` para fallos con tipo+detalle, `[Ignite][VM] envío completado`, `[Ignite][RCV] publicado`.
+
 ## Fase 3 — Contenido nuevo
 
 - Push de texto/notas rápidas (canal de control existente, mensaje pequeño sin archivo).

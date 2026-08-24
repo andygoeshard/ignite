@@ -53,7 +53,7 @@ import java.io.FileOutputStream
 import java.security.MessageDigest
 
 /** Identidad declarada por el emisor en el handshake /pair. */
-private data class PairIdentity(val id: String?, val name: String?)
+private data class PairIdentity(val id: String?, val name: String?, val pin: String? = null)
 
 /**
  * Embedded Ktor HTTP server that receives file uploads and stores them in the
@@ -274,6 +274,10 @@ class KtorFileReceiver(
                         PairIdentity(
                             id = it["deviceId"]?.jsonPrimitive?.contentOrNull,
                             name = it["name"]?.jsonPrimitive?.contentOrNull,
+                            // PIN del ESCANEAADOR: sin esto la confianza era
+                            // asimétrica — el escaneado confiaba para recibir
+                            // pero no podía enviar (no conocía nuestro PIN).
+                            pin = it["pin"]?.jsonPrimitive?.contentOrNull,
                         )
                     }
                 }.getOrNull()
@@ -286,7 +290,7 @@ class KtorFileReceiver(
                     deviceId = identity.id,
                     name = identity.name ?: peer,
                     host = peer,
-                    pin = null,
+                    pin = identity.pin?.takeIf { it.length == 6 },
                     policy = TrustPolicy.AUTO,
                 )
                 println("[Ignite][RCV] emparejado con ${identity.name} (${identity.id}) vía /pair")
@@ -311,12 +315,22 @@ class KtorFileReceiver(
                 val channel = call.receiveChannel()
                 val out = java.io.ByteArrayOutputStream()
                 val buffer = ByteArray(DEFAULT_CHUNK_SIZE)
+                var overflow = false
                 while (true) {
                     val read = channel.readAvailable(buffer, 0, buffer.size)
                     if (read == -1) break
-                    if (read > 0) out.write(buffer, 0, read)
+                    if (read > 0) {
+                        // Cap real (antes MAX_PREVIEW_BYTES existía pero no se aplicaba).
+                        if (out.size() + read > MAX_PREVIEW_BYTES) {
+                            overflow = true
+                        } else {
+                            out.write(buffer, 0, read)
+                        }
+                    } else if (read == 0) {
+                        kotlinx.coroutines.delay(10) // anti-spin en red lenta
+                    }
                 }
-                storePendingPreview(uploadId, out.toByteArray())
+                if (!overflow) storePendingPreview(uploadId, out.toByteArray())
                 println("[Ignite][RCV] preview recibida para upload=${uploadId.take(8)}… (${out.size()}B)")
                 call.respond(HttpStatusCode.OK)
             }
@@ -539,24 +553,27 @@ class KtorFileReceiver(
                     out.write(buffer, 0, read)
                     digest?.update(buffer, 0, read)
                     received += read
-                    val fraction = if (totalBytes > 0) {
-                        (received.toFloat() / totalBytes).coerceIn(0f, 1f)
-                    } else {
-                        continue
-                    }
-                    if (fraction - lastEmitted >= PROGRESS_STEP) {
-                        lastEmitted = fraction
-                        repository.upsert(record.copy(progress = fraction))
-                        _incomingEvents.tryEmit(
-                            IncomingEvent.Progress(fileName, peer, received, totalBytes, fraction, peerDeviceId),
-                        )
-                    }
-                    if (totalBytes > 0) {
-                        val pct = ((received * 100) / totalBytes).toInt()
-                        if (pct >= lastLoggedPct + 20) {
-                            lastLoggedPct = pct
-                            println("[Ignite][RCV] '$fileName' $pct% (${"${received / 1024 / 1024}MB"}/${totalBytes / 1024 / 1024}MB)")
-                        }
+                } else if (read == 0) {
+                    kotlinx.coroutines.delay(10) // anti-spin esperando datos en red lenta
+                    continue
+                }
+                val fraction = if (totalBytes > 0) {
+                    (received.toFloat() / totalBytes).coerceIn(0f, 1f)
+                } else {
+                    continue
+                }
+                if (fraction - lastEmitted >= PROGRESS_STEP) {
+                    lastEmitted = fraction
+                    repository.upsert(record.copy(progress = fraction))
+                    _incomingEvents.tryEmit(
+                        IncomingEvent.Progress(fileName, peer, received, totalBytes, fraction, peerDeviceId),
+                    )
+                }
+                if (totalBytes > 0) {
+                    val pct = ((received * 100) / totalBytes).toInt()
+                    if (pct >= lastLoggedPct + 20) {
+                        lastLoggedPct = pct
+                        println("[Ignite][RCV] '$fileName' $pct% (${"${received / 1024 / 1024}MB"}/${totalBytes / 1024 / 1024}MB)")
                     }
                 }
             }

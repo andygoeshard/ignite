@@ -28,6 +28,8 @@ actual class AppStorage {
         val path = if (file.exists()) file.readText().trim() else ""
         return path.ifBlank { null }
     }
+
+    actual fun displayPath(): String = receiveDir()
 }
 
 actual class DeviceInfo {
@@ -77,6 +79,9 @@ actual fun revealInFileManager(path: String): Boolean = runCatching {
     java.awt.Desktop.getDesktop().open(folder)
     true
 }.getOrDefault(false)
+
+/** Desktop: el archivo ya está donde el usuario lo ve — identidad. */
+actual suspend fun publishReceivedFile(path: String): String = path
 
 actual val supportsCustomDownloadDir: Boolean = true
 
@@ -131,3 +136,27 @@ actual fun generateQr(content: String, sizePx: Int): ImageBitmap? = runCatching 
     }
     org.jetbrains.skia.Image.makeFromEncoded(png).toComposeImageBitmap()
 }.getOrNull()
+
+/** Diagnóstico: solo heap JVM disponible en desktop. */
+actual fun debugMemSnapshot(): String = runCatching {
+    val rt = Runtime.getRuntime()
+    "heap=${(rt.totalMemory() - rt.freeMemory()) / 1048576}/${rt.maxMemory() / 1048576}MB"
+}.getOrDefault("heap=?")
+
+/** IPs LAN/loopback-externas de esta máquina (IPv4, sin loopback). */
+actual fun localLanAddresses(): Set<String> {
+    val out = mutableSetOf<String>()
+    runCatching {
+        val nis = java.net.NetworkInterface.getNetworkInterfaces() ?: return emptySet()
+        while (nis.hasMoreElements()) {
+            val addrs = nis.nextElement().inetAddresses ?: continue
+            while (addrs.hasMoreElements()) {
+                val a = addrs.nextElement()
+                if (a.isLoopbackAddress) continue
+                val host = a.hostAddress ?: continue
+                if (host.indexOf(':') < 0) out += host
+            }
+        }
+    }
+    return out
+}

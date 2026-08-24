@@ -29,6 +29,54 @@ import kotlin.test.assertTrue
 
 class KtorFileTransferTest {
 
+    /**
+     * Regresión: 'historia alan.txt' (espacio en el nombre) volvía 500 desde
+     * el receptor. Mismo escenario: archivo chico, nombre con espacios.
+     */
+    @Test
+    fun sendFileWithNameWithSpaces() = runBlocking {
+        FileKit.init(appId = "com.andyl.ignite.test")
+
+        val port = 48236
+        val storage = AppStorage()
+        val repository = RoomTransferRepository(NoopTransferDao())
+        val pairing = PairingManager()
+        val deviceInfo = com.andyl.ignite.data.DeviceInfo()
+        val pin = pairing.getPin()
+        val receiver = KtorFileReceiver(storage, repository, pairing, deviceInfo, port, ::createServerEngine, requiresApproval = false)
+        receiver.start()
+
+        val sender = KtorFileSender(createHttpClient(), deviceInfo)
+
+        val source = File.createTempFile("ignite-src-space", ".txt").apply {
+            writeText("historia con espacios ".repeat(200))
+        }
+        val target = Device(id = "test-peer", name = "test", host = "127.0.0.1", port = port)
+
+        File(storage.receiveDir(), "historia alan.txt").delete()
+        File(storage.receiveDir(), "historia alan (1).txt").delete()
+
+        val incoming = mutableListOf<IncomingEvent>()
+        val collector = launch {
+            receiver.incomingEvents.collect { event ->
+                incoming.add(event)
+                if (event is IncomingEvent.Completed) cancel()
+            }
+        }
+        kotlinx.coroutines.delay(200)
+        val progress = sender.send(target, source.absolutePath, "historia alan.txt", source.length(), pin).toList()
+        kotlinx.coroutines.delay(500)
+        collector.cancel()
+
+        assertEquals(1f, progress.lastOrNull(), "Final progress should be 100%")
+        assertTrue(incoming.any { it is IncomingEvent.Completed && it.fileName == "historia alan.txt" }, "Should complete (got $incoming)")
+        val received = File(storage.receiveDir(), "historia alan.txt")
+        assertTrue(received.exists(), "Received file should exist")
+        assertEquals("historia con espacios", received.readText().take(21))
+
+        receiver.stop()
+    }
+
     @Test
     fun sendAndReceiveRoundTrip() = runBlocking {
         FileKit.init(appId = "com.andyl.ignite.test")
@@ -269,10 +317,11 @@ class KtorFileTransferTest {
         kotlinx.coroutines.delay(200)
 
         // El "escaneador" (device B) le habla a A vía /pair con el PIN del QR de A
+        // y comparte su PROPIO pin para que A pueda enviarle sin tipear.
         val client = createHttpClient()
         val response = client.post("http://127.0.0.1:$port/pair?pin=$pin") {
             contentType(io.ktor.http.ContentType.Application.Json)
-            setBody("""{"deviceId":"dev-B","name":"Celu de B"}""")
+            setBody("""{"deviceId":"dev-B","name":"Celu de B","pin":"654321"}""")
         }
         assertEquals(io.ktor.http.HttpStatusCode.OK, response.status)
         val body = response.bodyAsText()
@@ -282,6 +331,9 @@ class KtorFileTransferTest {
         // El receptor ahora confía en B con política AUTO
         assertEquals(com.andyl.ignite.domain.TrustPolicy.AUTO, trustedDevices.policyFor("dev-B"))
         assertEquals("Celu de B", trustedDevices.pinFor("dev-B")?.name)
+        // Confianza SIMÉTRICA: A aprendió el PIN de B (antes quedaba null y B
+        // no podía recibir envíos automáticos).
+        assertEquals("654321", trustedDevices.pinFor("dev-B")?.pin)
 
         // PIN incorrecto NO otorga confianza
         val bad = client.post("http://127.0.0.1:$port/pair?pin=000000") {

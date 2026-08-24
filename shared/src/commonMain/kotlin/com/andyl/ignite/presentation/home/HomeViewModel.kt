@@ -25,7 +25,9 @@ import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -69,7 +71,7 @@ class HomeViewModel(
             deviceName = runCatching { deviceInfo.deviceName }.getOrDefault(""),
             localIp = getLocalIp(),
             showWelcome = runCatching { !deviceInfo.hasCustomName }.getOrDefault(false),
-            downloadPath = runCatching { storage.receiveDir() }.getOrDefault(""),
+            downloadPath = runCatching { storage.displayPath() }.getOrDefault(""),
             canChooseDownloadDir = supportsCustomDownloadDir,
             myPin = runCatching { pairingManager.getPin() }.getOrDefault(""),
             trustedIds = trusted.map { it.deviceId }.toSet(),
@@ -116,6 +118,13 @@ class HomeViewModel(
         recoverInterrupted()
         observeReceiverPower()
         externalDrops?.onEach { paths -> onExternalDrop(paths) }?.launchIn(viewModelScope)
+        // Diagnóstico de memoria: [Ignite][MEM] cada 15s (java vs nativo).
+        viewModelScope.launch {
+            while (isActive) {
+                delay(15_000)
+                println("[Ignite][MEM] ${runCatching { com.andyl.ignite.data.debugMemSnapshot() }.getOrDefault("?")}")
+            }
+        }
     }
 
     /** Fase 2a: archivos soltados en la drop zone → cola + envío automático. */
@@ -308,11 +317,18 @@ class HomeViewModel(
 
                     is IncomingEvent.Completed -> {
                         approvalTimerJob?.cancel()
+                        // Publicar en la carpeta visible del usuario (Descargas/Ignite
+                        // o la carpeta que eligió). Desktop: identidad.
+                        val finalPath = withContext(Dispatchers.IO) {
+                            runCatching { com.andyl.ignite.data.publishReceivedFile(event.path) }
+                                .onFailure { println("[Ignite][ERROR] no se pudo publicar '${event.fileName}': ${it.message}") }
+                                .getOrElse { event.path }
+                        }
                         updateState { state ->
                             state.copy(
                                 incoming = null,
                                 recentReceived = (
-                                    listOf(ReceivedFileUi(event.fileName, event.path, event.sizeBytes)) +
+                                    listOf(ReceivedFileUi(event.fileName, finalPath, event.sizeBytes)) +
                                         state.recentReceived
                                     ).distinctBy { it.path }.take(MAX_RECENT),
                             )
@@ -581,7 +597,17 @@ class HomeViewModel(
             runCatching {
                 client.post("http://${payload.host}:${payload.port}/pair?pin=${payload.pin}") {
                     contentType(ContentType.Application.Json)
-                    setBody(json.encodeToString(mapOf("deviceId" to deviceInfo.deviceId, "name" to deviceInfo.deviceName)))
+                    // Mandamos TAMBIÉN nuestro propio PIN: el otro lado lo guarda
+                    // y puede enviarnos sin tipear nada (confianza simétrica).
+                    setBody(
+                        json.encodeToString(
+                            mapOf(
+                                "deviceId" to deviceInfo.deviceId,
+                                "name" to deviceInfo.deviceName,
+                                "pin" to state.value.myPin.ifBlank { runCatching { pairingManager.getPin() }.getOrDefault("") },
+                            ),
+                        ),
+                    )
                 }.bodyAsText()
             }.getOrNull()
         }
@@ -685,7 +711,7 @@ class HomeViewModel(
 
     private fun setDownloadDir(path: String?) {
         runCatching { storage.setReceiveDir(path) }
-        val current = runCatching { storage.receiveDir() }.getOrDefault("")
+        val current = runCatching { storage.displayPath() }.getOrDefault("")
         updateState { it.copy(downloadPath = current) }
         showNote(if (path == null) "Descargas en carpeta por defecto" else "Descargas en $current")
     }
@@ -832,6 +858,15 @@ class HomeViewModel(
                 cancelled -> SendOutcome(files.first().name, target.name, success = false, cancelled = true)
                 failedFile == null -> SendOutcome(files.first().name, target.name, success = true, count = files.size)
                 else -> SendOutcome(failedFile!!, target.name, success = false, count = 1, error = failedError)
+            }
+            // Log grepeable del resultado (logcat/consola): [Ignite][ERROR] o [Ignite][VM]
+            if (!outcome.success && !outcome.cancelled) {
+                println(
+                    "[Ignite][ERROR] envío de '${outcome.fileName}' a ${target.name} (${target.host}) falló: " +
+                        "error=${failedError?.let { it::class.simpleName } ?: "?"} detalle=${failedError?.detail ?: "sin detalle"}",
+                )
+            } else if (outcome.success) {
+                println("[Ignite][VM] envío completado: ${files.size} archivo(s) → ${target.name} OK")
             }
             showOutcome(outcome)
             sendJob = null

@@ -1,21 +1,40 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# --- Ignite: reglas R8 para release ---
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Stack traces útiles en crashes de release
+-keepattributes SourceFile,LineNumberTable,RuntimeVisibleAnnotations,AnnotationDefault
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# ================= kotlinx.serialization =================
+# Serializadores generados en compilación + lookup defensivo por reflexión
+-keepattributes *Annotation*, InnerClasses
+-dontnote kotlinx.serialization.**
+-keepclassmembers class kotlinx.serialization.json.** { *** Companion; }
+-keepclasseswithmembers class kotlinx.serialization.json.** { kotlinx.serialization.KSerializer serializer(...); }
+-keep,includedescriptorclasses class com.andyl.ignite.**$$serializer { *; }
+-keepclassmembers class com.andyl.ignite.** { *** Companion; }
+-keepclasseswithmembers class com.andyl.ignite.** { kotlinx.serialization.KSerializer serializer(...); }
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# ================= Ktor (cliente CIO + servidor CIO) =================
+# Los engines se resuelven vía ServiceLoader: conservar containers y motores.
+-keep class io.ktor.server.cio.** { *; }
+-keep class io.ktor.client.engine.cio.** { *; }
+-keep class * extends io.ktor.client.HttpClientEngineContainer { *; }
+-keep class * implements io.ktor.server.engine.ApplicationEngineFactory { *; }
+-keepnames class io.ktor.** { volatile <fields>; }
+-dontwarn org.slf4j.**
+-dontwarn org.fusesource.jansi.**
+-dontwarn io.ktor.**
+
+# ================= zxing / escáner QR =================
+-keep class com.google.zxing.** { *; }
+-keep class com.journeyapps.barcodescanner.** { *; }
+
+# ================= Koin =================
+# Definiciones programáticas (sin reflection de nombres), pero conservamos
+# las anotaciones por si Koin las usa internamente.
+-keep class org.koin.** { *; }
+-dontwarn org.koin.**
+
+# ================= FileKit =================
+-dontwarn io.github.vinceglb.filekit.**
+
+# Coroutines/Compose traen sus propias reglas embebidas en los artefactos.

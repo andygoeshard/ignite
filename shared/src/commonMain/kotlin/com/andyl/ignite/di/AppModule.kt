@@ -5,6 +5,7 @@ import com.andyl.ignite.data.DeviceInfo
 import com.andyl.ignite.data.RoomTransferRepository
 import com.andyl.ignite.data.createAppStorage
 import com.andyl.ignite.data.createDeviceInfo
+import com.andyl.ignite.data.localLanAddresses
 import com.andyl.ignite.data.createTrustedDevices
 import com.andyl.ignite.data.db.IgniteDatabase
 import com.andyl.ignite.data.db.createDatabase
@@ -44,7 +45,7 @@ val appModule: Module = module {
         RoomTransferRepository(requireNotNull(get<IgniteDatabase>().transferDao()))
     }
 
-    single<FileSender> { KtorFileSender(get(), get()) }
+    single<FileSender> { KtorFileSender(get(), get(), selfAddresses = localLanAddresses()) }
     single<com.andyl.ignite.domain.ReceiverController> {
         com.andyl.ignite.domain.ReceiverController(get(), get())
     }

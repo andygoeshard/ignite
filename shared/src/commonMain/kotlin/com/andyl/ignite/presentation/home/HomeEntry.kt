@@ -57,7 +57,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.andyl.ignite.domain.TrustPolicy
 import com.andyl.ignite.presentation.format.formatSize
 import io.github.vinceglb.filekit.dialogs.FileKitMode
-import io.github.vinceglb.filekit.dialogs.compose.rememberDirectoryPickerLauncher
 import io.github.vinceglb.filekit.dialogs.compose.rememberFilePickerLauncher
 import io.github.vinceglb.filekit.path
 import kotlinx.coroutines.launch
@@ -89,8 +88,9 @@ fun HomeEntry(onNavigateToHistory: () -> Unit) {
         },
     )
 
-    val directoryLauncher = rememberDirectoryPickerLauncher { directory ->
-        vm.onEvent(HomeEvent.OnDownloadDirPicked(directory?.path))
+    // Multiplataforma: FileKit en desktop, SAF (ACTION_OPEN_DOCUMENT_TREE) en Android.
+    val directoryLauncher = rememberFolderPickerLauncher { location ->
+        vm.onEvent(HomeEvent.OnDownloadDirPicked(location))
     }
 
     Scaffold(
@@ -140,7 +140,7 @@ fun HomeEntry(onNavigateToHistory: () -> Unit) {
             downloadPath = state.downloadPath,
             canChooseDir = state.canChooseDownloadDir,
             onConfirm = { vm.onEvent(HomeEvent.OnRenameConfirm(it)) },
-            onPickDirectory = { directoryLauncher.launch() },
+            onPickDirectory = { directoryLauncher() },
             onResetDirectory = { vm.onEvent(HomeEvent.OnDownloadDirPicked(null)) },
             onDismiss = { vm.onEvent(HomeEvent.OnDialogDismiss) },
         )

@@ -31,7 +31,30 @@ class KtorFileSender(
     private val client: HttpClient,
     private val deviceInfo: DeviceInfo? = null,
     private val chunkSize: Int = DEFAULT_CHUNK_SIZE,
+    private val selfAddresses: Set<String> = emptySet(),
 ) : FileSender {
+
+    /**
+     * El emulador Android vive detrás del NAT del host: sus paquetes llegan
+     * con IP 127.0.0.1 o con la PROPIA IP de la máquina. En ambos casos NO se
+     * puede dialear directo: hay que pasar por el túnel adb reverse, que vive
+     * en loopback pero en OTRO puerto (el receptor local ya ocupa PORT).
+     * Setup: `adb reverse tcp:48214 tcp:48213`
+     */
+    private fun dialTarget(target: Device): String {
+        val defaults = com.andyl.ignite.domain.model.TransferDefaults
+        val isNotSelf = target.id != deviceInfo?.deviceId
+        // Solo el emulador real: beacon en loopback CON el puerto estándar.
+        // Los tests usan loopback con puerto efímero → no se tocan.
+        val ghostLoopback =
+            target.port == defaults.PORT &&
+                (target.host == "127.0.0.1" || target.host == "localhost")
+        val claimsMyIp = target.host in selfAddresses
+        if (isNotSelf && (ghostLoopback || claimsMyIp)) {
+            return "127.0.0.1:${defaults.PORT + 1}"
+        }
+        return "${target.host}:${target.port}"
+    }
 
     override suspend fun send(
         target: Device,
@@ -41,7 +64,7 @@ class KtorFileSender(
         pin: String?,
     ): Flow<Float> = callbackFlow {
         // 1) Compute SHA-256 upfront (for integrity header)
-        println("[Ignite][SND] inicio: '$fileName' (${sizeBytes / 1024 / 1024}MB) → ${target.host}:${target.port} pin=${pin != null}")
+        println("[Ignite][SND] inicio: '$fileName' (${sizeBytes / 1024 / 1024}MB) → ${target.host}:${target.port} pin=${pin != null} (dial ${dialTarget(target)})")
         val t0Sha = System.currentTimeMillis()
         val sha256 = runCatching { sha256Transfer(localPath) }
             .onFailure {
@@ -83,27 +106,58 @@ class KtorFileSender(
 
         var attempt = 0
         var currentOffset = offset
+        // Byte más lejano alcanzado en cualquier intento: mientras la red
+        // inestable siga sumando aunque sea 0.5KB/s, el presupuesto de
+        // reintentos se renueva (paciencia infinita para transferencias vivas).
+        var bestProgress = offset
         var lastError: Exception? = null
-        while (attempt < 2) {
-            try {
+        while (attempt < MAX_SEND_ATTEMPTS) {
+            // El upload corre FUERA del catch de errores: si el productor se
+            // cancela justo después del éxito (carrera clásica de callbackFlow),
+            // esa cancelación NO es un fallo de transferencia — antes causaba el
+            // falso "no se pudo enviar" tras un 200 OK y disparaba reintentos.
+            val outcome = runCatching {
                 executeUpload(target, localPath, fileName, sizeBytes, pin, sha256, currentOffset, uploadId)
+            }
+            if (outcome.isSuccess) {
+                println("[Ignite][SND] '$fileName' confirmado por el receptor")
                 trySend(1f)
                 close()
-                awaitClose { }
+                runCatching { awaitClose { } }
                 return@callbackFlow
-            } catch (e: Exception) {
-                lastError = e
-                println("[Ignite][SND] intento $attempt falló: ${e::class.simpleName}: ${e.message}")
-                e.printStackTrace()
-                // If offset mismatch (409) retry once without offset
-                if (e.message?.contains("Offset mismatch") == true && currentOffset > 0) {
-                    currentOffset = 0L
-                    attempt++
-                    continue
-                }
-                // 401 invalid PIN should not retry
-                break
             }
+            val e = outcome.exceptionOrNull() as? Exception ?: IllegalStateException("Transfer failed")
+            lastError = e
+            val msg = e.message.orEmpty()
+            println("[Ignite][SND] intento ${attempt + 1}/$MAX_SEND_ATTEMPTS falló: ${e::class.simpleName}: $msg")
+            e.printStackTrace()
+
+            // Errores definitivos: no tiene sentido insistir.
+            if ("PIN incorrecto" in msg || "rechazada" in msg || "Sin espacio" in msg) break
+
+            // 409: el receptor tiene OTRO largo. Antes reseteábamos a 0 y
+            // perdíamos todo el progreso; ahora recuperamos el offset real
+            // que el servidor reporta en su mensaje.
+            if ("Offset mismatch" in msg) {
+                currentOffset = Regex("server has (\\d+)").find(msg)
+                    ?.groupValues?.get(1)?.toLongOrNull() ?: 0L
+                bestProgress = currentOffset
+                attempt++
+                continue
+            }
+
+            // ¿Hubo avance? Renovar presupuesto de reintentos.
+            val sentThisAttempt = (e as? AttemptAborted)?.sentBytes ?: currentOffset
+            if (sentThisAttempt > bestProgress) {
+                bestProgress = sentThisAttempt
+                attempt = 0
+            } else {
+                attempt++
+            }
+            currentOffset = bestProgress
+            val backoffMs = BACKOFF_MS[(attempt - 1).coerceIn(0, BACKOFF_MS.lastIndex)]
+            println("[Ignite][SND] reintento en ${backoffMs / 1000}s desde byte $currentOffset")
+            kotlinx.coroutines.delay(backoffMs)
         }
         close(lastError ?: IllegalStateException("Transfer failed"))
         awaitClose { }
@@ -121,11 +175,12 @@ class KtorFileSender(
     ) {
         val remaining = sizeBytes - offset
         var sent = offset
+        var lastEmittedBytes = offset
         val t0 = System.currentTimeMillis()
         var lastPct = ((offset * 100) / sizeBytes.coerceAtLeast(1)).toInt()
         println("[Ignite][SND] subiendo '$fileName' desde offset $offset (${remaining / 1024 / 1024}MB restantes)")
         // Report initial progress if resuming
-        if (offset > 0) trySend((offset.toFloat() / sizeBytes).coerceIn(0f, 1f))
+        if (offset > 0) trySend(((offset.toFloat() / sizeBytes) * 0.999f).coerceIn(0f, 0.999f))
 
         // Cuerpo binario crudo (sin multipart): sin límites de parser ni overhead de boundaries.
         // Los metadatos viajan por headers (fileName, sha256, offset, total bytes).
@@ -152,7 +207,16 @@ class KtorFileSender(
                             if (read > 0) {
                                 channel.writeFully(buffer, 0, read)
                                 sent += read
-                                trySend((sent.toFloat() / sizeBytes).coerceIn(0f, 1f))
+                                // Throttle: emitir como máximo cada ~0.5% o 64KB
+                                // (antes 512KB — un archivo chico no generaba NI
+                                // UNA emisión y la barra quedaba congelada).
+                                val minDelta = maxOf(64L * 1024L, sizeBytes / 200)
+                                if (sent - lastEmittedBytes >= minDelta) {
+                                    lastEmittedBytes = sent
+                                    // Tope 0.999 mientras falta la confirmación:
+                                    // el 100% real llega tras el 200 OK.
+                                    trySend(((sent.toFloat() / sizeBytes) * 0.999f).coerceIn(0f, 0.999f))
+                                }
                                 val pct = ((sent * 100) / sizeBytes.coerceAtLeast(1)).toInt()
                                 if (pct >= lastPct + 25) {
                                     lastPct = pct
@@ -169,21 +233,28 @@ class KtorFileSender(
             }
         }
 
-        val response: HttpResponse = client.post("http://${target.host}:${target.port}/upload") {
-            url.parameters.append("fileName", fileName)
-            header(HttpHeaders.ContentType, ContentType.Application.OctetStream.toString())
-            if (sha256 != null) header(HEADER_SHA256, sha256)
-            if (pin != null) header(HEADER_PIN, pin)
-            if (offset > 0) header(HEADER_OFFSET, offset.toString())
-            header(HEADER_TOTAL_BYTES, sizeBytes.toString())
-            header(HEADER_UPLOAD_ID, uploadId)
-            // Identidad: le permite al receptor aplicar su política de confianza
-            // (aceptar siempre / silencioso) sin preguntar.
-            if (deviceInfo != null) {
-                header(HEADER_DEVICE_ID, deviceInfo.deviceId)
-                header(HEADER_DEVICE_NAME, deviceInfo.deviceName)
+        val response: HttpResponse = try {
+            client.post("http://${dialTarget(target)}/upload") {
+                url.parameters.append("fileName", fileName)
+                header(HttpHeaders.ContentType, ContentType.Application.OctetStream.toString())
+                if (sha256 != null) header(HEADER_SHA256, sha256)
+                if (pin != null) header(HEADER_PIN, pin)
+                if (offset > 0) header(HEADER_OFFSET, offset.toString())
+                header(HEADER_TOTAL_BYTES, sizeBytes.toString())
+                header(HEADER_UPLOAD_ID, uploadId)
+                // Identidad: le permite al receptor aplicar su política de confianza
+                // (aceptar siempre / silencioso) sin preguntar.
+                if (deviceInfo != null) {
+                    header(HEADER_DEVICE_ID, deviceInfo.deviceId)
+                    header(HEADER_DEVICE_NAME, deviceInfo.deviceName)
+                }
+                setBody(body)
             }
-            setBody(body)
+        } catch (e: Exception) {
+            // Red cortada a mitad del body: informar hasta dónde llegamos para
+            // que la política de reintentos renueve presupuesto si hubo avance.
+            println("[Ignite][SND] conexión cortada a los $sent bytes: ${e::class.simpleName}: ${e.message}")
+            throw AttemptAborted(sent, e)
         }
 
         println("[Ignite][SND] respuesta: ${response.status} en ${System.currentTimeMillis() - t0}ms (${sent / 1024 / 1024}MB enviados)")
@@ -201,7 +272,7 @@ class KtorFileSender(
     }
 
     private suspend fun queryOffset(target: Device, fileName: String, pin: String): Long {
-        val resp = client.get("http://${target.host}:${target.port}/upload/status") {
+        val resp = client.get("http://${dialTarget(target)}/upload/status") {
             url.parameters.append("fileName", fileName)
             header(HEADER_PIN, pin)
         }
@@ -215,7 +286,7 @@ class KtorFileSender(
     private suspend fun sendPreview(target: Device, localPath: String, uploadId: String, pin: String?) {
         val bytes = createThumbnail(localPath, PREVIEW_MAX_PX) ?: return
         println("[Ignite][SND] preview generada (${bytes.size}B) para upload=${uploadId.take(8)}…")
-        val response = client.post("http://${target.host}:${target.port}/preview") {
+        val response = client.post("http://${dialTarget(target)}/preview") {
             url.parameters.append("uploadId", uploadId)
             if (pin != null) header(HEADER_PIN, pin)
             header(HttpHeaders.ContentType, "image/jpeg")
@@ -231,6 +302,15 @@ class KtorFileSender(
 
     private companion object {
         const val DEFAULT_CHUNK_SIZE = 64 * 1024
+
+        /** Reintentos SIN progreso; cada avance renueva el contador. */
+        const val MAX_SEND_ATTEMPTS = 8
+
+        /** Backoff entre reintentos (indexado por attempt-1). */
+        val BACKOFF_MS = longArrayOf(1_000L, 2_000L, 4_000L, 8_000L, 15_000L, 15_000L, 15_000L)
+
+        /** Fallo de red a mitad del body: conserva el byte alcanzado. */
+        class AttemptAborted(val sentBytes: Long, cause: Exception) : Exception(cause.message, cause)
         const val HEADER_PIN = "X-Ignite-Pin"
         const val HEADER_SHA256 = "X-Ignite-Sha256"
         const val HEADER_OFFSET = "X-Ignite-Offset"

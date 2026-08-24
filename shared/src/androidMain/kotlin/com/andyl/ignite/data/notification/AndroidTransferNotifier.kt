@@ -21,6 +21,10 @@ class AndroidTransferNotifier(
         const val EXTRA_TOTAL = "total"
         const val EXTRA_DEVICE_NAME = "deviceName"
         const val EXTRA_IS_SENDING = "isSending"
+
+        /** Fallback directo (sin FGS) para notificar desde segundo plano. */
+        const val CHANNEL_ID = "ignite_transfers"
+        const val NOTIF_ID_TRANSFER = 4243
     }
 
     override fun onIdle(deviceName: String) {
@@ -53,15 +57,73 @@ class AndroidTransferNotifier(
             deviceName?.let { putExtra(EXTRA_DEVICE_NAME, it) }
             isSending?.let { putExtra(EXTRA_IS_SENDING, it) }
         }
-        // startService is safe here because service is already in foreground
-        // after MainActivity's startForegroundService call. For updates we use startService.
+        // Camino normal: el servicio foreground ya está vivo y actualiza su
+        // notificación. Si NO está corriendo (receptor pausado, app en segundo
+        // plano con Android 12+ que bloquea startForegroundService), caemos a
+        // una notificación DIRECTA del NotificationManager para que el envío
+        // igual se vea.
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
+                return
             } else {
                 context.startService(intent)
+                return
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            println("[Ignite][ERROR] FGS no disponible (${e::class.simpleName}) — notificación directa")
+        }
+        postDirectNotification(action, fileName, progress, totalBytes)
+    }
+
+    private fun postDirectNotification(action: String, fileName: String?, progress: Float?, totalBytes: Long?) {
+        try {
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                manager.createNotificationChannel(
+                    android.app.NotificationChannel(
+                        CHANNEL_ID,
+                        "Transferencias",
+                        android.app.NotificationManager.IMPORTANCE_LOW,
+                    ),
+                )
+            }
+            val name = fileName ?: "archivo"
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                android.app.Notification.Builder(context, CHANNEL_ID)
+            } else {
+                @Suppress("DEPRECATION") android.app.Notification.Builder(context)
+            }
+            builder.setSmallIcon(android.R.drawable.stat_sys_upload)
+                .setOnlyAlertOnce(true)
+                .setAutoCancel(action == ACTION_COMPLETED || action == ACTION_FAILED)
+                .setContentTitle("Ignite")
+                .setContentText(
+                    when (action) {
+                        ACTION_SENDING -> "Enviando «$name»…"
+                        ACTION_COMPLETED -> "«$name» enviado"
+                        ACTION_FAILED -> "No se pudo enviar «$name»"
+                        else -> "«$name»"
+                    },
+                )
+            if (progress != null && action == ACTION_SENDING) {
+                builder.setProgress(100, (progress.coerceIn(0f, 1f) * 100).toInt(), false)
+                builder.setOngoing(true)
+            }
+            val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+            if (launchIntent != null) {
+                builder.setContentIntent(
+                    android.app.PendingIntent.getActivity(
+                        context,
+                        0,
+                        launchIntent,
+                        android.app.PendingIntent.FLAG_IMMUTABLE,
+                    ),
+                )
+            }
+            manager.notify(NOTIF_ID_TRANSFER, builder.build())
+        } catch (e: Exception) {
+            println("[Ignite][ERROR] notificación directa falló: ${e.message}")
         }
     }
 }
