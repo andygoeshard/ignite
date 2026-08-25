@@ -1,0 +1,12 @@
+-dontwarn io.netty.**
+-dontwarn com.aayushatharva.brotli4j.**
+-dontwarn com.jcraft.jzlib.**
+-dontwarn org.jboss.marshalling.**
+-dontwarn org.conscrypt.**
+-dontwarn io.netty.internal.tcnative.**
+-dontwarn reactor.blockhound.**
+-dontwarn org.apache.logging.log4j.**
+-dontwarn net.jpountz.lz4.**
+-dontwarn org.freedesktop.dbus.**
+-dontwarn com.sun.jna.**
+-dontwarn javax.script.**
