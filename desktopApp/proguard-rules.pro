@@ -1,12 +1,21 @@
--dontwarn io.netty.**
+-ignorewarnings
+-dontoptimize
+
+-keep class io.netty.** { *; }
+-keep class org.apache.logging.log4j.** { *; }
+-keep class io.ktor.** { *; }
+-keep class org.jetbrains.skiko.** { *; }
+-keep class com.jetbrains.** { *; }
+
 -dontwarn com.aayushatharva.brotli4j.**
 -dontwarn com.jcraft.jzlib.**
 -dontwarn org.jboss.marshalling.**
 -dontwarn org.conscrypt.**
 -dontwarn io.netty.internal.tcnative.**
 -dontwarn reactor.blockhound.**
--dontwarn org.apache.logging.log4j.**
 -dontwarn net.jpountz.lz4.**
 -dontwarn org.freedesktop.dbus.**
 -dontwarn com.sun.jna.**
 -dontwarn javax.script.**
+-dontwarn org.bouncycastle.**
+-dontwarn sun.misc.Cleaner
