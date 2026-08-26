@@ -34,9 +34,7 @@ compose.desktop {
     application {
         mainClass = "com.andyl.ignite.MainKt"
 
-        buildTypes.release.proguard {
-            isEnabled.set(false)
-        }
+        jvmArgs += listOf("-Xmx512m", "-Xms128m")
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
