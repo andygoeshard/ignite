@@ -22,7 +22,7 @@ dependencies {
     implementation(project(":shared"))
 
     implementation(compose.desktop.currentOs)
-    implementation(compose.material3)
+    implementation(libs.compose.material3)
     implementation(libs.kotlinx.coroutinesSwing)
     implementation(libs.filekit.core)
     implementation(libs.koin.core)
@@ -33,8 +33,6 @@ dependencies {
 compose.desktop {
     application {
         mainClass = "com.andyl.ignite.MainKt"
-
-        buildTypes.release.isProguardEnabled = false
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
