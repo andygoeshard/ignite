@@ -32,6 +32,6 @@ fun createHttpClient(): HttpClient = HttpClient {
     }
 
     install(Logging) {
-        level = LogLevel.INFO
+        level = LogLevel.NONE
     }
 }

@@ -119,13 +119,6 @@ class HomeViewModel(
         recoverInterrupted()
         observeReceiverPower()
         externalDrops?.onEach { paths -> onExternalDrop(paths) }?.launchIn(viewModelScope)
-        // Diagnóstico de memoria: [Ignite][MEM] cada 15s (java vs nativo).
-        viewModelScope.launch {
-            while (isActive) {
-                delay(15_000)
-                println("[Ignite][MEM] ${runCatching { com.andyl.ignite.data.debugMemSnapshot() }.getOrDefault("?")}")
-            }
-        }
     }
 
     /** Fase 2a: archivos soltados en la drop zone → cola + envío automático. */
@@ -971,7 +964,7 @@ class HomeViewModel(
 
     private companion object {
         const val STALE_AFTER_MS = 7_000L
-        const val PRUNE_INTERVAL_MS = 1_000L
+        const val PRUNE_INTERVAL_MS = 5_000L
         const val CONNECT_GRACE_MS = 8_000L
         const val OUTCOME_DURATION_MS = 5_000L
         const val MAX_RECENT = 4

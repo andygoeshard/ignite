@@ -36,6 +36,10 @@ compose.desktop {
 
         jvmArgs += listOf("-Xmx512m", "-Xms128m")
 
+        buildTypes.release.proguard {
+            isEnabled.set(false)
+        }
+
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "Ignite"

@@ -11,7 +11,9 @@ import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -46,38 +48,40 @@ class SubnetScannerDiscovery(
     override suspend fun stop() {
         job?.cancel()
         job = null
+        scope.cancel()
     }
 
     private suspend fun runScan() {
         val ownId = deviceInfo.deviceId
         val ownIps = localIpsSet()
+        var scanCount = 0
         while (scope.isActive) {
-            val base = localSubnetBase() // ej "192.168.100."
+            val base = localSubnetBase()
             if (base != null) {
                 val ips = (1..254).map { "$base$it" }.filter { it !in ownIps }
-                ips.chunked(32).forEach { chunk ->
+                ips.chunked(16).forEach { chunk ->
                     chunk.map { ip ->
                         scope.launch {
                             val device = withTimeoutOrNull(500) {
                                 runCatching {
-                                    // Primero verifica que haya un Ignite escuchando
-                                    val ok = client.get("http://$ip:$port/").status == HttpStatusCode.OK
-                                    if (!ok) return@runCatching null
-                                    // Intenta traer beacon real para nombre/id correctos (evita "Ignite 192.168.x")
+                                    val response = client.get("http://$ip:$port/beacon")
+                                    if (response.status != HttpStatusCode.OK) return@runCatching null
                                     val json = Json { ignoreUnknownKeys = true }
-                                    val body = client.get("http://$ip:$port/beacon").bodyAsText()
+                                    val body = response.bodyAsText()
                                     val beacon = json.decodeFromString<Beacon>(body)
-                                    if (beacon.deviceId == ownId) return@runCatching null // soy yo
+                                    if (beacon.deviceId == ownId) return@runCatching null
                                     Device(id = beacon.deviceId, name = beacon.deviceName, host = ip, port = beacon.port)
                                 }.getOrNull()
                             }
                             if (device != null) _devices.tryEmit(device)
                         }
                     }
-                    delay(80)
+                    delay(120)
                 }
             }
-            delay(5000)
+            scanCount++
+            val delayMs = if (scanCount <= 6) 5_000L else 60_000L
+            delay(delayMs)
         }
     }
 

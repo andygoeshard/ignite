@@ -8,7 +8,9 @@ import com.andyl.ignite.domain.model.TransferDefaults
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -47,6 +49,7 @@ class MdnsDeviceDiscovery(
     override suspend fun stop() {
         job?.cancel()
         job = null
+        scope.cancel()
     }
 
     private suspend fun runMdns() {
@@ -76,7 +79,7 @@ class MdnsDeviceDiscovery(
                 if (beacon.deviceId == deviceInfo.deviceId) continue
                 _devices.tryEmit(Device(id = beacon.deviceId, name = beacon.deviceName, host = pkt.address.hostAddress ?: continue, port = beacon.port))
             }
-            delay(3000)
+            delay(5000)
         }
         runCatching { socket.leaveGroup(group) }
         socket.close()

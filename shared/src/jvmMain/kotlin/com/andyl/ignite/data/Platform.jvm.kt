@@ -96,14 +96,28 @@ actual fun createTrustedDevices(): TrustedDevices {
     )
 }
 
-/** Miniatura JPEG vía ImageIO (solo imágenes; video no soportado en JVM puro). */
+/** Miniatura JPEG vía ImageIO con subsampling (no decodifica la imagen completa). */
 actual fun createThumbnail(path: String, maxPx: Int): ByteArray? = runCatching {
     val source = File(path)
     if (!source.exists() || source.length() == 0L) return@runCatching null
-    val img = javax.imageio.ImageIO.read(source) ?: return@runCatching null
-    val scale = minOf(1f, maxPx.toFloat() / maxOf(img.width, img.height).coerceAtLeast(1))
-    val w = (img.width * scale).toInt().coerceIn(1, maxPx)
-    val h = (img.height * scale).toInt().coerceIn(1, maxPx)
+    val imageStream = javax.imageio.ImageIO.createImageInputStream(source) ?: return@runCatching null
+    val reader = run {
+        val it = javax.imageio.ImageIO.getImageReaders(imageStream)
+        if (it.hasNext()) it.next() else { imageStream.close(); return@runCatching null }
+    }
+    reader.input = imageStream
+    val origW = reader.getWidth(0)
+    val origH = reader.getHeight(0)
+    if (origW <= 0 || origH <= 0) { reader.dispose(); imageStream.close(); return@runCatching null }
+    val scale = minOf(1f, maxPx.toFloat() / maxOf(origW, origH).coerceAtLeast(1))
+    val subsample = (1f / scale).toInt().coerceAtLeast(1)
+    val param = reader.defaultReadParam
+    param.setSourceSubsampling(subsample, subsample, 0, 0)
+    val img = reader.read(0, param)
+    reader.dispose()
+    imageStream.close()
+    val w = img.width.coerceIn(1, maxPx)
+    val h = img.height.coerceIn(1, maxPx)
     val out = java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB)
     val g = out.createGraphics()
     g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR)

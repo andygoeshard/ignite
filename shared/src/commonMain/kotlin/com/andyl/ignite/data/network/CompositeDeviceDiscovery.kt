@@ -5,6 +5,7 @@ import com.andyl.ignite.domain.model.Device
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -18,23 +19,25 @@ class CompositeDeviceDiscovery(
     private val delegates: List<DeviceDiscovery>,
 ) : DeviceDiscovery {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var scope: CoroutineScope? = null
     private val _devices = MutableSharedFlow<Device>(extraBufferCapacity = 64)
     override val devices: SharedFlow<Device> = _devices.asSharedFlow()
 
-    init {
+    override suspend fun start() {
+        if (scope != null) return
+        val s = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        scope = s
         delegates.forEach { delegate ->
-            scope.launch {
+            s.launch {
                 delegate.devices.collect { _devices.tryEmit(it) }
             }
         }
-    }
-
-    override suspend fun start() {
         delegates.forEach { runCatching { it.start() } }
     }
 
     override suspend fun stop() {
         delegates.forEach { runCatching { it.stop() } }
+        scope?.cancel()
+        scope = null
     }
 }

@@ -905,12 +905,18 @@ private fun NeonProgressBar(
         animationSpec = tween(240),
         label = "neon-fill",
     )
-    val sweep by rememberInfiniteTransition(label = "neon-sweep").animateFloat(
-        initialValue = 0f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(tween(1500, easing = LinearEasing)),
-        label = "sweep-pos",
-    )
+    val activeTransfer = progress in 0.001f..0.999f
+    val sweep = if (activeTransfer) {
+        val t by rememberInfiniteTransition(label = "neon-sweep").animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(1500, easing = LinearEasing)),
+            label = "sweep-pos",
+        )
+        t
+    } else {
+        0f
+    }
     Canvas(modifier.fillMaxWidth().height(height)) {
         val r = CornerRadius(size.height / 2f, size.height / 2f)
         drawRoundRect(color = track, cornerRadius = r)
@@ -1000,19 +1006,22 @@ private fun Header(
                 )
             }
             IconButton(onClick = onRefresh) {
-                val spin = rememberInfiniteTransition(label = "refresh-spin")
-                val angle by spin.animateFloat(
-                    initialValue = 0f,
-                    targetValue = 360f,
-                    animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)),
-                    label = "refresh-angle",
-                )
-                // #30: sin movimiento reducido, gira mientras escanea; si no, estático
-                Icon(
-                    Icons.Default.Refresh,
-                    contentDescription = "Buscar de nuevo",
-                    modifier = Modifier.rotate(if (isScanning && !reduceMotion) angle else 0f),
-                )
+                if (isScanning && !reduceMotion) {
+                    val spin = rememberInfiniteTransition(label = "refresh-spin")
+                    val angle by spin.animateFloat(
+                        initialValue = 0f,
+                        targetValue = 360f,
+                        animationSpec = infiniteRepeatable(tween(900, easing = LinearEasing)),
+                        label = "refresh-angle",
+                    )
+                    Icon(
+                        Icons.Default.Refresh,
+                        contentDescription = "Buscar de nuevo",
+                        modifier = Modifier.rotate(angle),
+                    )
+                } else {
+                    Icon(Icons.Default.Refresh, contentDescription = "Buscar de nuevo")
+                }
             }
         }
         if (localIp.isNotBlank()) {

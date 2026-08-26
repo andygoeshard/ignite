@@ -108,7 +108,7 @@ fun HomeEntry(onNavigateToHistory: () -> Unit) {
             TopAppBar(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        com.andyl.ignite.presentation.branding.FlameTraceMark(size = 44.dp)
+                        com.andyl.ignite.presentation.branding.FlameTraceMark(size = 44.dp, animate = false)
                         Spacer(Modifier.width(8.dp))
                         Text("Ignite", fontWeight = FontWeight.Bold)
                     }
@@ -307,7 +307,7 @@ private fun ProfileDialog(
         onDismissRequest = onDismiss,
         title = {
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                com.andyl.ignite.presentation.branding.FlameTraceMark(size = 96.dp)
+                com.andyl.ignite.presentation.branding.FlameTraceMark(size = 96.dp, animate = false)
                 Spacer(Modifier.height(8.dp))
                 Text(
                     if (isWelcome) "¡Bienvenido a Ignite!" else "Mi dispositivo",

@@ -23,7 +23,7 @@ fun zipFolderToTemp(sourceDir: File, prefix: String = "ignite_folder"): File {
                 zos.closeEntry()
             } else {
                 zos.putNextEntry(ZipEntry(rel))
-                BufferedInputStream(FileInputStream(file)).use { it.copyTo(zos) }
+                BufferedInputStream(FileInputStream(file)).use { it.copyTo(zos, bufferSize = 64 * 1024) }
                 zos.closeEntry()
             }
         }

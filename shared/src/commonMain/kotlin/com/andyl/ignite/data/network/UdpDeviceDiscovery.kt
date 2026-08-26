@@ -8,7 +8,9 @@ import com.andyl.ignite.domain.model.TransferDefaults
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -39,6 +41,8 @@ class UdpDeviceDiscovery(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var job: Job? = null
+    private var cachedBroadcasts: List<InetAddress>? = null
+    private var cachedBroadcastsAt: Long = 0L
 
     private val _devices = MutableSharedFlow<Device>(extraBufferCapacity = 32)
     override val devices: SharedFlow<Device> = _devices.asSharedFlow()
@@ -53,6 +57,7 @@ class UdpDeviceDiscovery(
     override suspend fun stop() {
         job?.cancel()
         job = null
+        scope.cancel()
     }
 
     private suspend fun runDiscovery() {
@@ -69,7 +74,7 @@ class UdpDeviceDiscovery(
             // Announce our presence on every broadcast address (global + per-interface).
             // Sending only to 255.255.255.255 can miss peers when the machine has
             // virtual adapters (WSL/Hyper-V/Docker on Windows, utun on macOS).
-            for (address in broadcastAddresses()) {
+            for (address in cachedBroadcasts()) {
                 try {
                     socket.send(DatagramPacket(announce, announce.size, address, port))
                 } catch (_: Exception) {
@@ -79,7 +84,7 @@ class UdpDeviceDiscovery(
                 loggedTargets = true
                 val locals = localIps()
                 println("[Ignite] local IPs: $locals")
-                println("[Ignite] announcing as '${deviceInfo.deviceName}' (${deviceInfo.deviceId.take(8)}) to broadcasts: ${broadcastAddresses().mapNotNull { it.hostAddress }}")
+                println("[Ignite] announcing as '${deviceInfo.deviceName}' (${deviceInfo.deviceId.take(8)}) to broadcasts: ${cachedBroadcasts().mapNotNull { it.hostAddress }}")
                 println("[Ignite] tip: tu IP local real debe coincidir en los 3 primeros octetos con la del otro. Si ves 10.x o 192.168.196.x es VPN/VM, no tu Wi-Fi. Usa 'ifconfig | grep inet' y conecta manual con esa IP.")
             }
 
@@ -128,6 +133,14 @@ class UdpDeviceDiscovery(
         return true
     }
 
+    private fun cachedBroadcasts(): List<InetAddress> {
+        val now = System.currentTimeMillis()
+        if (cachedBroadcasts != null && now - cachedBroadcastsAt < 60_000) return cachedBroadcasts!!
+        cachedBroadcasts = broadcastAddresses()
+        cachedBroadcastsAt = now
+        return cachedBroadcasts!!
+    }
+
     private fun broadcastAddresses(): List<InetAddress> = buildList {
         add(InetAddress.getByName(BROADCAST_ADDRESS))
         runCatching {
@@ -171,6 +184,6 @@ class UdpDeviceDiscovery(
         const val DISCOVERY_PORT = 48432
         const val BROADCAST_ADDRESS = "255.255.255.255"
         const val MAX_PACKET = 1024
-        const val ANNOUNCE_INTERVAL_MS = 2_000L
+        const val ANNOUNCE_INTERVAL_MS = 5_000L
     }
 }
