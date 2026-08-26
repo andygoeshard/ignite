@@ -34,9 +34,7 @@ compose.desktop {
     application {
         mainClass = "com.andyl.ignite.MainKt"
 
-        buildTypes.release.proguard {
-            configurationFiles.from(project.file("proguard-rules.pro"))
-        }
+        buildTypes.release.isProguardEnabled = false
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
