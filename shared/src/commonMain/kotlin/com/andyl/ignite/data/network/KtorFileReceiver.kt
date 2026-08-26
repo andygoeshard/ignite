@@ -334,6 +334,37 @@ class KtorFileReceiver(
                 println("[Ignite][RCV] preview recibida para upload=${uploadId.take(8)}… (${out.size()}B)")
                 call.respond(HttpStatusCode.OK)
             }
+            // Push de texto rápido (Fase 3): mensaje corto sin archivos.
+            // Sin approval: el texto aparece directo como banner en el receptor.
+            post("/message") {
+                val pin = call.request.header(HEADER_PIN) ?: call.request.queryParameters["pin"]
+                if (!pairingManager.validate(pin)) {
+                    call.respond(HttpStatusCode.Unauthorized, "Invalid PIN")
+                    return@post
+                }
+                val bodyText = runCatching {
+                    call.receiveChannel().readRemaining().readByteArray().decodeToString()
+                }.getOrNull().orEmpty()
+                val text = runCatching {
+                    Json.parseToJsonElement(bodyText).jsonObject["text"]?.jsonPrimitive?.contentOrNull
+                }.getOrNull()
+                if (text.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, "text required")
+                    return@post
+                }
+                val senderName = call.request.header(HEADER_DEVICE_NAME) ?: call.request.local.remoteHost
+                val senderDeviceId = call.request.header(HEADER_DEVICE_ID)
+                println("[Ignite][RCV] /message de $senderName: «${text.take(80)}»")
+                _incomingEvents.tryEmit(
+                    IncomingEvent.TextMessageReceived(
+                        text = text,
+                        senderName = senderName,
+                        peerHost = call.request.local.remoteHost,
+                        peerDeviceId = senderDeviceId,
+                    ),
+                )
+                call.respond(HttpStatusCode.OK)
+            }
             post("/upload") {
                 // 1) PIN validation
                 val pin = call.request.header(HEADER_PIN) ?: call.request.queryParameters["pin"]

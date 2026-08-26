@@ -100,6 +100,14 @@ data class InterruptedTransferUi(
     val progress: Float,
 )
 
+/** Mensaje de texto recibido de un par (Fase 3). */
+data class TextMessageUi(
+    val text: String,
+    val senderName: String,
+    val senderHost: String,
+    val timestamp: Long,
+)
+
 sealed interface HomeEvent {
     data object OnRefresh : HomeEvent
     data class OnDeviceSelected(val device: Device) : HomeEvent
@@ -133,6 +141,16 @@ sealed interface HomeEvent {
     data object OnManualConnect : HomeEvent
     data object OnCancelSend : HomeEvent
     data object OnDismissInterrupted : HomeEvent
+    /** Toggle entre modo archivos y modo texto. */
+    data object OnToggleTextMode : HomeEvent
+    /** Texto que el usuario está escribiendo. */
+    data class OnTextInputChanged(val text: String) : HomeEvent
+    /** Enviar el texto al dispositivo seleccionado. */
+    data object OnSendText : HomeEvent
+    /** Descartar un mensaje de texto recibido. */
+    data class OnDismissTextMessage(val index: Int) : HomeEvent
+    /** Editar y reenviar: pre-llena el campo de texto con el contenido recibido. */
+    data class OnEditTextMessage(val text: String) : HomeEvent
 }
 
 data class HomeState(
@@ -166,6 +184,12 @@ data class HomeState(
     val pinRememberedFor: String? = null,
     /** Política de recepción por deviceId (solo pares confiables). */
     val devicePolicies: Map<String, TrustPolicy> = emptyMap(),
+    /** Modo texto activo (vs modo archivos). */
+    val isTextMode: Boolean = false,
+    /** Texto que el usuario está escribiendo para enviar. */
+    val textInput: String = "",
+    /** Mensajes de texto recibidos de pares. */
+    val receivedTextMessages: List<TextMessageUi> = emptyList(),
 ) {
     val canSend: Boolean
         get() = selectedDevice != null &&
@@ -175,6 +199,12 @@ data class HomeState(
 
     val isSendActive: Boolean
         get() = sendSession !is SendSession.Idle
+
+    /** Listo para enviar texto: dispositivo seleccionado, texto no vacío, PIN de 6. */
+    val canSendText: Boolean
+        get() = selectedDevice != null &&
+            textInput.isNotBlank() &&
+            targetPin.length == 6
 }
 
 sealed interface HomeEffect {

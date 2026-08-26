@@ -11,11 +11,13 @@ import com.andyl.ignite.data.db.IgniteDatabase
 import com.andyl.ignite.data.db.createDatabase
 import com.andyl.ignite.data.network.KtorFileReceiver
 import com.andyl.ignite.data.network.KtorFileSender
+import com.andyl.ignite.data.network.KtorTextSender
 import com.andyl.ignite.data.network.createHttpClient
 import com.andyl.ignite.data.network.createServerEngine
 import com.andyl.ignite.domain.FileReceiver
 import com.andyl.ignite.domain.FileSender
 import com.andyl.ignite.domain.PairingManager
+import com.andyl.ignite.domain.TextSender
 import com.andyl.ignite.domain.TransferRepository
 import com.andyl.ignite.domain.model.TransferDefaults
 import com.andyl.ignite.presentation.home.HomeViewModel
@@ -46,6 +48,7 @@ val appModule: Module = module {
     }
 
     single<FileSender> { KtorFileSender(get(), get(), selfAddresses = localLanAddresses()) }
+    single<TextSender> { KtorTextSender(get(), get(), selfAddresses = localLanAddresses()) }
     single<com.andyl.ignite.domain.ReceiverController> {
         com.andyl.ignite.domain.ReceiverController(get(), get())
     }
@@ -74,6 +77,7 @@ val appModule: Module = module {
             httpClient = get(),
             trustedDevices = get(),
             receiverController = get(),
+            textSender = get(),
             externalDrops = com.andyl.ignite.data.externalDropFlow(),
         )
     }

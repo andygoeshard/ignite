@@ -16,6 +16,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -478,6 +479,35 @@ private fun TransferCard(
         Row(verticalAlignment = Alignment.CenterVertically) {
             SectionLabel("Transmisión")
             Spacer(Modifier.width(8.dp))
+            // Toggle File | Text (Fase 3)
+            if (!active) {
+                Surface(
+                    shape = MaterialTheme.shapes.extraSmall,
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                ) {
+                    Row {
+                        Text(
+                            text = "📁",
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier
+                                .clickable { if (state.isTextMode) onEvent(HomeEvent.OnToggleTextMode) }
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                            color = if (!state.isTextMode) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = "💬",
+                            style = MaterialTheme.typography.labelMedium,
+                            modifier = Modifier
+                                .clickable { if (!state.isTextMode) onEvent(HomeEvent.OnToggleTextMode) }
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
+                            color = if (state.isTextMode) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
             StatusChip(
                 text = when (val s = state.sendSession) {
                     is SendSession.Preparing -> "Preparando"
@@ -534,7 +564,7 @@ private fun TransferCard(
         }
 
         // Cola compacta (sólo cuando no hay envío activo ocupando la zona héroe)
-        if (state.pendingFiles.isNotEmpty() && !active) {
+        if (state.pendingFiles.isNotEmpty() && !active && !state.isTextMode) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 state.pendingFiles.forEach { file ->
@@ -549,6 +579,24 @@ private fun TransferCard(
                     )
                 }
             }
+        }
+
+        // Campo de texto (modo texto, Fase 3)
+        if (state.isTextMode && !active) {
+            OutlinedTextField(
+                value = state.textInput,
+                onValueChange = { onEvent(HomeEvent.OnTextInputChanged(it)) },
+                label = { Text("Escribí un mensaje") },
+                placeholder = { Text("Hola, mirá esto…") },
+                maxLines = 4,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                text = "${state.textInput.length} caracteres",
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         // PIN del receptor + pista de PIN recordado
@@ -578,32 +626,52 @@ private fun TransferCard(
         }
 
         // Acciones
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            OutlinedButton(
-                onClick = onPickFile,
-                enabled = !active,
-                modifier = Modifier.weight(1f),
-            ) {
-                Text(if (state.pendingFiles.isEmpty()) "Agregar archivo" else "Agregar otro")
-            }
+        if (state.isTextMode) {
             Button(
-                onClick = { onEvent(HomeEvent.OnSendClick) },
-                enabled = state.canSend,
-                modifier = Modifier.weight(1.4f),
+                onClick = { onEvent(HomeEvent.OnSendText) },
+                enabled = state.canSendText && !active,
+                modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(
                     when {
-                        state.sendSession is SendSession.Preparing -> "Preparando…"
-                        state.sendSession is SendSession.Cancelling -> "Cancelando…"
-                        state.sendSession is SendSession.Sending -> "Enviando…"
+                        active -> "Enviando…"
                         state.selectedDevice == null -> "Elegí un dispositivo"
-                        state.pendingFiles.isEmpty() -> "Seleccioná un archivo"
+                        state.textInput.isBlank() -> "Escribí un mensaje"
                         state.targetPin.length != 6 -> "Ingresá el PIN"
-                        else -> "Enviar a ${state.selectedDevice.name}"
+                        else -> "Enviar texto a ${state.selectedDevice.name}"
                     },
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+            }
+        } else {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = onPickFile,
+                    enabled = !active,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(if (state.pendingFiles.isEmpty()) "Agregar archivo" else "Agregar otro")
+                }
+                Button(
+                    onClick = { onEvent(HomeEvent.OnSendClick) },
+                    enabled = state.canSend,
+                    modifier = Modifier.weight(1.4f),
+                ) {
+                    Text(
+                        when {
+                            state.sendSession is SendSession.Preparing -> "Preparando…"
+                            state.sendSession is SendSession.Cancelling -> "Cancelando…"
+                            state.sendSession is SendSession.Sending -> "Enviando…"
+                            state.selectedDevice == null -> "Elegí un dispositivo"
+                            state.pendingFiles.isEmpty() -> "Seleccioná un archivo"
+                            state.targetPin.length != 6 -> "Ingresá el PIN"
+                            else -> "Enviar a ${state.selectedDevice.name}"
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
     }
@@ -742,14 +810,25 @@ private fun ReceiveSection(
     modifier: Modifier = Modifier,
 ) {
     AnimatedVisibility(
-        visible = state.recentReceived.isNotEmpty(),
+        visible = state.recentReceived.isNotEmpty() || state.receivedTextMessages.isNotEmpty(),
         enter = fadeIn() + expandVertically(),
         modifier = modifier,
     ) {
-        RecentReceivedCard(
-            files = state.recentReceived,
-            onOpenFolder = { onEvent(HomeEvent.OnOpenReceivedFolder(it)) },
-        )
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (state.recentReceived.isNotEmpty()) {
+                RecentReceivedCard(
+                    files = state.recentReceived,
+                    onOpenFolder = { onEvent(HomeEvent.OnOpenReceivedFolder(it)) },
+                )
+            }
+            if (state.receivedTextMessages.isNotEmpty()) {
+                ReceivedTextsCard(
+                    messages = state.receivedTextMessages,
+                    onDismiss = { onEvent(HomeEvent.OnDismissTextMessage(it)) },
+                    onEditResend = { onEvent(HomeEvent.OnEditTextMessage(it)) },
+                )
+            }
+        }
     }
 }
 
@@ -1095,6 +1174,87 @@ private fun RecentReceivedCard(
                             contentDescription = "Abrir carpeta",
                             tint = MaterialTheme.colorScheme.primary,
                         )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Banner de mensajes de texto recibidos (Fase 3): copy, edit & resend, dismiss. */
+@Composable
+private fun ReceivedTextsCard(
+    messages: List<TextMessageUi>,
+    onDismiss: (Int) -> Unit,
+    onEditResend: (String) -> Unit,
+) {
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.tertiaryContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp, end = 8.dp)) {
+            Text(
+                "Mensajes recibidos",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onTertiaryContainer,
+            )
+            Spacer(Modifier.height(4.dp))
+            messages.take(5).forEachIndexed { index, msg ->
+                Surface(
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.surface,
+                    border = androidx.compose.foundation.BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 3.dp),
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Description,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                text = "${msg.senderName} · ${msg.senderHost}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = msg.text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 4,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+                            OutlinedButton(
+                                onClick = {
+                                    clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(msg.text))
+                                },
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            ) {
+                                Text("Copiar", style = MaterialTheme.typography.labelSmall)
+                            }
+                            OutlinedButton(
+                                onClick = { onEditResend(msg.text) },
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            ) {
+                                Text("Reenviar", style = MaterialTheme.typography.labelSmall)
+                            }
+                            TextButton(
+                                onClick = { onDismiss(index) },
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            ) {
+                                Text("Descartar", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
                     }
                 }
             }

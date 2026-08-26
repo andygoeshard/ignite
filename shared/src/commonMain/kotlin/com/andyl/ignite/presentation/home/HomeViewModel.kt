@@ -53,6 +53,7 @@ class HomeViewModel(
     private val enablePrune: Boolean = true,
     private val trustedDevices: TrustedDevices? = null,
     private val receiverController: com.andyl.ignite.domain.ReceiverController? = null,
+    private val textSender: com.andyl.ignite.domain.TextSender? = null,
     /** Drops de la ventana drop zone (desktop); null en Android. */
     externalDrops: kotlinx.coroutines.flow.Flow<List<String>>? = null,
 ) : MviViewModel<HomeEvent, HomeState, HomeEffect>() {
@@ -342,6 +343,19 @@ class HomeViewModel(
                         showNote("No se pudo recibir «${event.fileName}»: ${event.message ?: "error desconocido"}")
                         runCatching { notifier.onFailed(event.fileName, event.message) }
                     }
+
+                    is IncomingEvent.TextMessageReceived -> {
+                        val msg = TextMessageUi(
+                            text = event.text,
+                            senderName = event.senderName,
+                            senderHost = event.peerHost,
+                            timestamp = System.currentTimeMillis(),
+                        )
+                        updateState { s ->
+                            s.copy(receivedTextMessages = listOf(msg) + s.receivedTextMessages)
+                        }
+                        showNote("📝 Mensaje de ${event.senderName}: «${event.text.take(60)}${if (event.text.length > 60) "…" else ""}»")
+                    }
                 }
             }
             .launchIn(viewModelScope)
@@ -398,6 +412,13 @@ class HomeViewModel(
             HomeEvent.OnManualConnect -> viewModelScope.launch { connectManual() }
             HomeEvent.OnCancelSend -> cancelSend()
             HomeEvent.OnDismissInterrupted -> updateState { it.copy(interrupted = emptyList()) }
+            HomeEvent.OnToggleTextMode -> updateState { it.copy(isTextMode = !it.isTextMode) }
+            is HomeEvent.OnTextInputChanged -> updateState { it.copy(textInput = event.text) }
+            HomeEvent.OnSendText -> sendText()
+            is HomeEvent.OnDismissTextMessage -> updateState { s ->
+                s.copy(receivedTextMessages = s.receivedTextMessages.toMutableList().apply { removeAt(event.index) })
+            }
+            is HomeEvent.OnEditTextMessage -> updateState { it.copy(isTextMode = true, textInput = event.text) }
         }
     }
 
@@ -909,6 +930,34 @@ class HomeViewModel(
     /** Feedback transitorio vía effect (#28): la UI decide cómo mostrarlo. */
     private fun showNote(text: String) {
         sendEffect(HomeEffect.ShowSnackbar(text))
+    }
+
+    private fun sendText() {
+        val target = state.value.selectedDevice ?: return
+        val text = state.value.textInput.trim()
+        if (text.isBlank()) return
+        val pin = state.value.targetPin
+        if (pin.length != 6) {
+            showNote("Ingresá el PIN de 6 dígitos del receptor")
+            return
+        }
+        if (textSender == null) {
+            showNote("Envío de texto no disponible")
+            return
+        }
+
+        viewModelScope.launch {
+            showNote("Enviando mensaje a ${target.name}…")
+            runCatching {
+                textSender.send(target, text, pin)
+                showNote("✅ Mensaje enviado a ${target.name}")
+                updateState { it.copy(textInput = "") }
+            }.onFailure { e ->
+                val msg = e.message ?: "error desconocido"
+                println("[Ignite][TXT] envío falló a ${target.name}: $msg")
+                showNote("No se pudo enviar el mensaje: $msg")
+            }
+        }
     }
 
     private fun showOutcome(outcome: SendOutcome) {

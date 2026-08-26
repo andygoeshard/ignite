@@ -52,6 +52,16 @@ sealed interface IncomingEvent {
         /** Nombre declarado por el emisor en el header de identidad. */
         val peerDeviceName: String? = null,
     ) : IncomingEvent
+
+    /** Mensaje de texto rápido recibido de un par (Fase 3). */
+    data class TextMessageReceived(
+        val text: String,
+        val senderName: String,
+        override val peerHost: String,
+        override val peerDeviceId: String? = null,
+    ) : IncomingEvent {
+        override val fileName: String get() = "[texto]"
+    }
 }
 
 /**
