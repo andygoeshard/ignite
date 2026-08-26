@@ -34,6 +34,10 @@ compose.desktop {
     application {
         mainClass = "com.andyl.ignite.MainKt"
 
+        buildTypes.release.proguard {
+            isEnabled.set(false)
+        }
+
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "Ignite"
