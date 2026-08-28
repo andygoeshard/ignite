@@ -62,7 +62,9 @@ class KtorFileSender(
         fileName: String,
         sizeBytes: Long,
         pin: String?,
+        relativePath: String,
     ): Flow<Float> = callbackFlow {
+        val relPath = relativePath
         // 1) Compute SHA-256 upfront (for integrity header)
         println("[Ignite][SND] inicio: '$fileName' (${sizeBytes / 1024 / 1024}MB) → ${target.host}:${target.port} pin=${pin != null} (dial ${dialTarget(target)})")
         val t0Sha = System.currentTimeMillis()
@@ -117,7 +119,7 @@ class KtorFileSender(
             // esa cancelación NO es un fallo de transferencia — antes causaba el
             // falso "no se pudo enviar" tras un 200 OK y disparaba reintentos.
             val outcome = runCatching {
-                executeUpload(target, localPath, fileName, sizeBytes, pin, sha256, currentOffset, uploadId)
+                executeUpload(target, localPath, fileName, sizeBytes, pin, sha256, currentOffset, uploadId, relPath)
             }
             if (outcome.isSuccess) {
                 println("[Ignite][SND] '$fileName' confirmado por el receptor")
@@ -172,6 +174,7 @@ class KtorFileSender(
         sha256: String?,
         offset: Long,
         uploadId: String,
+        relativePath: String = "",
     ) {
         val remaining = sizeBytes - offset
         var sent = offset
@@ -248,6 +251,7 @@ class KtorFileSender(
                     header(HEADER_DEVICE_ID, deviceInfo.deviceId)
                     header(HEADER_DEVICE_NAME, deviceInfo.deviceName)
                 }
+                if (relativePath.isNotBlank()) header(HEADER_RELATIVE_PATH, relativePath)
                 setBody(body)
             }
         } catch (e: Exception) {
@@ -318,6 +322,7 @@ class KtorFileSender(
         const val HEADER_UPLOAD_ID = "X-Ignite-Upload-Id"
         const val HEADER_DEVICE_ID = "X-Ignite-Device-Id"
         const val HEADER_DEVICE_NAME = "X-Ignite-Device-Name"
+        const val HEADER_RELATIVE_PATH = "X-Ignite-Relative-Path"
 
         /** Lado más largo de la miniatura enviada al receptor. */
         const val PREVIEW_MAX_PX = 512

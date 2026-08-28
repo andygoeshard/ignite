@@ -106,9 +106,10 @@ class HomeViewModelTest {
             override fun onSending(fileName: String, progress: Float, totalBytes: Long) = Unit
             override fun onCompleted(fileName: String, isSending: Boolean) = Unit
             override fun onFailed(fileName: String, message: String?) = Unit
+            override fun onTextReceived(senderName: String, text: String) = Unit
         }
         val pairing = PairingManager()
-        return HomeViewModel(discovery, sender, receiver, repo, deviceInfo, storage, notifier, pairing, enablePrune = false)
+        return HomeViewModel(discovery, sender, receiver, repo, deviceInfo, storage, notifier, pairing, enablePrune = false, clipboardMonitor = null)
     }
 
     private class FakeDiscovery : DeviceDiscovery {
@@ -118,7 +119,7 @@ class HomeViewModelTest {
     }
 
     private class FakeSender : FileSender {
-        override suspend fun send(target: Device, localPath: String, fileName: String, sizeBytes: Long, pin: String?) = flowOf(1f)
+        override suspend fun send(target: Device, localPath: String, fileName: String, sizeBytes: Long, pin: String?, relativePath: String) = flowOf(1f)
     }
 
     private class FakeReceiver(

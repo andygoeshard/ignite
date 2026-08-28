@@ -34,6 +34,7 @@ sealed interface IncomingEvent {
         val path: String,
         val sizeBytes: Long,
         override val peerDeviceId: String? = null,
+        val sha256: String? = null,
     ) : IncomingEvent
 
     data class Failed(
@@ -61,6 +62,16 @@ sealed interface IncomingEvent {
         override val peerDeviceId: String? = null,
     ) : IncomingEvent {
         override val fileName: String get() = "[texto]"
+    }
+
+    /** Clipboard content received from a paired device (Fase 3 — clipboard sync). */
+    data class ClipboardReceived(
+        val content: String,
+        val senderName: String,
+        override val peerHost: String,
+        override val peerDeviceId: String? = null,
+    ) : IncomingEvent {
+        override val fileName: String get() = "[clipboard]"
     }
 }
 

@@ -10,6 +10,7 @@ interface FileSender {
      * Sends the file at [localPath] to [target], emitting a float in 0f..1f
      * as the transfer progresses. Throws on failure.
      * @param pin PIN shown on receiver (X-Ignite-Pin) – required when receiver has pairing enabled
+     * @param relativePath Relative path within a folder (empty for standalone files)
      */
     suspend fun send(
         target: Device,
@@ -17,5 +18,6 @@ interface FileSender {
         fileName: String,
         sizeBytes: Long,
         pin: String? = null,
+        relativePath: String = "",
     ): kotlinx.coroutines.flow.Flow<Float>
 }

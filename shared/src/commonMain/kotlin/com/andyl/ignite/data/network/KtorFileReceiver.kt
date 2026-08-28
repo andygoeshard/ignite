@@ -365,6 +365,36 @@ class KtorFileReceiver(
                 )
                 call.respond(HttpStatusCode.OK)
             }
+            // Clipboard sync (Fase 3): contenido del clipboard de un par.
+            post("/clipboard") {
+                val pin = call.request.header(HEADER_PIN) ?: call.request.queryParameters["pin"]
+                if (!pairingManager.validate(pin)) {
+                    call.respond(HttpStatusCode.Unauthorized, "Invalid PIN")
+                    return@post
+                }
+                val bodyText = runCatching {
+                    call.receiveChannel().readRemaining().readByteArray().decodeToString()
+                }.getOrNull().orEmpty()
+                val content = runCatching {
+                    Json.parseToJsonElement(bodyText).jsonObject["content"]?.jsonPrimitive?.contentOrNull
+                }.getOrNull()
+                if (content.isNullOrBlank()) {
+                    call.respond(HttpStatusCode.BadRequest, "content required")
+                    return@post
+                }
+                val senderName = call.request.header(HEADER_DEVICE_NAME) ?: call.request.local.remoteHost
+                val senderDeviceId = call.request.header(HEADER_DEVICE_ID)
+                println("[Ignite][RCV] /clipboard de $senderName: «${content.take(80)}»")
+                _incomingEvents.tryEmit(
+                    IncomingEvent.ClipboardReceived(
+                        content = content,
+                        senderName = senderName,
+                        peerHost = call.request.local.remoteHost,
+                        peerDeviceId = senderDeviceId,
+                    ),
+                )
+                call.respond(HttpStatusCode.OK)
+            }
             post("/upload") {
                 // 1) PIN validation
                 val pin = call.request.header(HEADER_PIN) ?: call.request.queryParameters["pin"]
@@ -382,6 +412,7 @@ class KtorFileReceiver(
                 // Identidad del emisor (Ignite >= 1.1): habilita políticas de confianza
                 val peerDeviceId = call.request.header(HEADER_DEVICE_ID)?.takeIf { it.isNotBlank() }
                 val peerDeviceName = call.request.header(HEADER_DEVICE_NAME)?.takeIf { it.isNotBlank() }
+                val relativePath = call.request.header(HEADER_RELATIVE_PATH)?.takeIf { it.isNotBlank() }
                 println(
                     "[Ignite][RCV] /upload de $peer (${peerDeviceName ?: "?"}): name=${requestedName ?: "?"} total=${totalBytes / 1024 / 1024}MB " +
                         "offset=$offset sha=${expectedSha?.take(12)}… contentLength=${call.request.headers[HttpHeaders.ContentLength]}",
@@ -471,7 +502,7 @@ class KtorFileReceiver(
                 try {
                     runCatching {
                         val channel = call.receiveChannel()
-                        savedFile = receiveFile(channel, requestedName, peer, totalBytes, offset, expectedSha, uploadId, peerDeviceId)
+                        savedFile = receiveFile(channel, requestedName, peer, totalBytes, offset, expectedSha, uploadId, peerDeviceId, relativePath)
                     }.onFailure { error ->
                         val name = savedFile?.name ?: requestedName ?: "archivo"
                         println("[Ignite][RCV] recepción falló '$name': ${error::class.simpleName}: ${error.message}")
@@ -518,11 +549,19 @@ class KtorFileReceiver(
         expectedSha256: String?,
         transferId: String,
         peerDeviceId: String? = null,
+        relativePath: String? = null,
     ): File {
         val fileName = requestedName
             ?: "received_${System.currentTimeMillis()}"
+        // If relativePath is set (folder send), preserve the directory structure
+        val baseTarget = if (!relativePath.isNullOrBlank()) {
+            val dir = File(storage.receiveDir(), File(relativePath).parent ?: "")
+            dir.mkdirs()
+            File(storage.receiveDir(), relativePath)
+        } else {
+            File(storage.receiveDir(), fileName)
+        }
         // For resumption we must use deterministic target, not uniqueTarget with (1)
-        val baseTarget = File(storage.receiveDir(), fileName)
         val target = if (offset > 0) baseTarget else uniqueTarget(baseTarget)
         target.parentFile?.mkdirs()
 
@@ -623,7 +662,7 @@ class KtorFileReceiver(
         println("[Ignite][RCV] '$fileName' completo: $received bytes en ${System.currentTimeMillis() - t0}ms")
 
         // SHA-256 verification
-        if (expectedSha256 != null && digest != null) {
+        val actualSha256: String? = if (expectedSha256 != null && digest != null) {
             val actual = digest.digest().joinToString("") { "%02x".format(it) }
             if (!actual.equals(expectedSha256, ignoreCase = true)) {
                 println("[Ignite][RCV] SHA-256 MISMATCH '$fileName': esperado=${expectedSha256.take(12)}… real=${actual.take(12)}…")
@@ -633,14 +672,15 @@ class KtorFileReceiver(
                 throw IllegalStateException("SHA-256 verification failed")
             }
             println("[Ignite][RCV] SHA-256 OK '$fileName'")
-        }
+            actual
+        } else null
 
         println("[Ignite][RCV] '$fileName' COMPLETADO y guardado en ${target.absolutePath}")
 
         repository.upsert(
             record.copy(sizeBytes = received, status = Transfer.Status.COMPLETED, progress = 1f),
         )
-        _incomingEvents.tryEmit(IncomingEvent.Completed(fileName, peer, target.absolutePath, received, peerDeviceId))
+        _incomingEvents.tryEmit(IncomingEvent.Completed(fileName, peer, target.absolutePath, received, peerDeviceId, sha256 = actualSha256))
         // Cleanup pending map
         synchronized(pendingApprovals) { pendingApprovals.remove(transferId) }
         return target
@@ -690,5 +730,6 @@ class KtorFileReceiver(
         const val HEADER_UPLOAD_ID = "X-Ignite-Upload-Id"
         const val HEADER_DEVICE_ID = "X-Ignite-Device-Id"
         const val HEADER_DEVICE_NAME = "X-Ignite-Device-Name"
+        const val HEADER_RELATIVE_PATH = "X-Ignite-Relative-Path"
     }
 }

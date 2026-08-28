@@ -23,11 +23,16 @@ Punto a punto, entre dispositivos de la misma red Wi-Fi.
 - 🔢 **PIN de emparejamiento** — código de 6 dígitos que el emisor debe conocer (header `X-Ignite-Pin`). Regenerable desde la app.
 - 💚 **Dispositivos confiables** — tras un envío exitoso el PIN queda recordado para ese dispositivo: la próxima vez se precarga solo (candadito 🔒). Podés olvidarlo cuando quieras.
 - 📤 **Enviar en un toque** — cola de varios archivos, arrastrar y soltar en Desktop, atajo `Ctrl+O`.
+- 📁 **Enviar carpetas** — seleccioná una carpeta y se envía entera preservando la estructura de subdirectorios en el receptor.
+- 📡 **Fan-out 1→N** — enviá el mismo archivo a múltiples dispositivos en paralelo. Progreso en vivo por cada target.
+- 📨 **Push de texto** — modo rápido para mandar notas de texto sin archivos. Toggle 📁/💬 en la tarjeta de transmisión.
+- 📋 **Clipboard sync** — sincronización automática del clipboard entre dispositivos emparejados. Historial de los últimos 5 items.
+- 🔒 **SHA-256 visible** — hash de integridad visible tanto al enviar como al recibir (tap para copiar).
 - ⏸️ **Cancelar y reanudar** — cortá un envío o una recepción en cualquier momento; si la app se cerró a mitad de transferencia, al volver te lo avisa y retoma donde quedó.
 - ♻️ **Anti-duplicados** — cada archivo tiene un ID estable (`SHA-256` de nombre+tamaño): reintentos y reconexiones no generan copias "(1)", "(2)".
 - 📊 **Progreso neón en tiempo real** — barra con degradado verde→cian por archivo y total del lote, bytes transferidos y porcentaje.
 - 🕓 **Historial persistente** — todos los envíos y recepciones quedan registrados con Room.
-- 🔔 **Notificaciones nativas** — progreso en vivo tanto en Android como en Desktop.
+- 🔔 **Notificaciones nativas** — progreso en vivo tanto en Android como en Desktop, con sonido para mensajes de texto.
 - 🎛️ **Accesibilidad** — respeta "reducir movimiento" del sistema (Android); listas con estados claros de carga/vacío/error y botón Reintentar.
 - 🌑 **Look cyberpunk** — verde neón sobre negro puro, tipografía mono, cards redondeadas y logo con vida propia. La identidad del producto, no un modo.
 
@@ -47,6 +52,16 @@ Punto a punto, entre dispositivos de la misma red Wi-Fi.
 | 💉 DI | Koin 4.2 |
 | 🧭 Navegación | Navigation 3 |
 | 📁 File picker | FileKit 0.15 |
+
+### Features Fase 3 (implementadas)
+
+| Feature | Descripción |
+|---|---|
+| 📁 Carpetas | Envío de carpetas completas con estructura preservada. Header `X-Ignite-Relative-Path` mantiene el árbol de subdirectorios. |
+| 📡 Fan-out 1→N | Multi-selección de dispositivos, envío paralelo con `async/awaitAll`, progreso por target. |
+| 📨 Push de texto | Toggle 📁/💬, `POST /message`, sin aprobación, notificación con sonido. |
+| 📋 Clipboard sync | `ClipboardMonitor` expect/actual (AWT polling / Android listener), `POST /clipboard`, historial. |
+| 🔒 SHA-256 visible | Hash calculado durante transferencia, visible en "Recibidos recientemente" y snackbar. Tap para copiar. |
 
 ---
 
@@ -152,9 +167,15 @@ y lógica del ViewModel (aprobaciones diferidas, olvidar dispositivo, reanudaci�
 
 ## 🗺️ Roadmap
 
+- [x] 📁 Enviar carpetas completas con estructura preservada
+- [x] 📡 Fan-out 1→N (envío paralelo a múltiples dispositivos)
+- [x] 📨 Push de texto (modo rápido de mensajería)
+- [x] 📋 Clipboard sync entre dispositivos
+- [x] 🔒 SHA-256 visible en envíos y recepciones
 - [ ] 📱 Target iOS (mDNS/NSD + servidor nativo)
 - [ ] 🗃️ Room persistente en Desktop (driver nativo)
-- [ ] 📁 Enviar carpetas completas
+- [ ] ⚡ Delta sync (rsync-lite: solo bloques cambiados)
+- [ ] 🚀 Chunks paralelos + benchmark in-app
 - [ ] 🔐 TLS punto a punto con certificado self-signed + fingerprint pinning
 - [ ] 📷 Emparejar por QR (PIN + fingerprint)
 - [ ] 🌍 i18n (strings a recursos CMP)

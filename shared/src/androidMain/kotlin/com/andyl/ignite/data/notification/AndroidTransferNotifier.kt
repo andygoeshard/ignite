@@ -16,15 +16,21 @@ class AndroidTransferNotifier(
         const val ACTION_SENDING = "com.andyl.ignite.action.SENDING"
         const val ACTION_COMPLETED = "com.andyl.ignite.action.COMPLETED"
         const val ACTION_FAILED = "com.andyl.ignite.action.FAILED"
+        const val ACTION_TEXT_RECEIVED = "com.andyl.ignite.action.TEXT_RECEIVED"
         const val EXTRA_FILE_NAME = "fileName"
         const val EXTRA_PROGRESS = "progress"
         const val EXTRA_TOTAL = "total"
         const val EXTRA_DEVICE_NAME = "deviceName"
         const val EXTRA_IS_SENDING = "isSending"
+        const val EXTRA_SENDER_NAME = "senderName"
+        const val EXTRA_TEXT = "text"
 
         /** Fallback directo (sin FGS) para notificar desde segundo plano. */
         const val CHANNEL_ID = "ignite_transfers"
         const val NOTIF_ID_TRANSFER = 4243
+
+        const val CHANNEL_MESSAGES = "ignite_messages"
+        const val NOTIF_ID_MSG = 4244
     }
 
     override fun onIdle(deviceName: String) {
@@ -45,6 +51,67 @@ class AndroidTransferNotifier(
 
     override fun onFailed(fileName: String, message: String?) {
         send(ACTION_FAILED, fileName = fileName)
+    }
+
+    override fun onTextReceived(senderName: String, text: String) {
+        val intent = Intent().apply {
+            setClassName(context.packageName, SERVICE_CLASS)
+            action = ACTION_TEXT_RECEIVED
+            putExtra(EXTRA_SENDER_NAME, senderName)
+            putExtra(EXTRA_TEXT, text)
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+            return
+        } catch (_: Exception) {
+        }
+        // Fallback: notificación directa si FGS no está vivo
+        postDirectTextNotification(senderName, text)
+    }
+
+    private fun postDirectTextNotification(senderName: String, text: String) {
+        try {
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = android.app.NotificationChannel(
+                    CHANNEL_MESSAGES,
+                    "Mensajes",
+                    android.app.NotificationManager.IMPORTANCE_HIGH,
+                ).apply {
+                    description = "Mensajes de texto recibidos de otros dispositivos"
+                    enableVibration(true)
+                    vibrationPattern = longArrayOf(0, 200, 100, 200)
+                }
+                manager.createNotificationChannel(channel)
+            }
+            val snippet = if (text.length > 200) text.take(200) + "…" else text
+            val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                android.app.Notification.Builder(context, CHANNEL_MESSAGES)
+            } else {
+                @Suppress("DEPRECATION") android.app.Notification.Builder(context)
+            }
+            val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)
+            if (launchIntent != null) {
+                builder.setContentIntent(
+                    android.app.PendingIntent.getActivity(
+                        context, 0, launchIntent,
+                        android.app.PendingIntent.FLAG_IMMUTABLE,
+                    ),
+                )
+            }
+            builder.setSmallIcon(android.R.drawable.stat_notify_chat)
+                .setContentTitle("Mensaje de $senderName")
+                .setContentText(snippet)
+                .setStyle(android.app.Notification.BigTextStyle().bigText(snippet))
+                .setAutoCancel(true)
+            manager.notify(NOTIF_ID_MSG, builder.build())
+        } catch (e: Exception) {
+            println("[Ignite][ERROR] notificación de texto directa falló: ${e.message}")
+        }
     }
 
     private fun send(action: String, fileName: String? = null, progress: Float? = null, totalBytes: Long? = null, deviceName: String? = null, isSending: Boolean? = null) {

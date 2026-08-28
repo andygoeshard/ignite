@@ -8,4 +8,7 @@ class JvmTransferNotifier : TransferNotifier {
     override fun onSending(fileName: String, progress: Float, totalBytes: Long) = Unit
     override fun onCompleted(fileName: String, isSending: Boolean) = Unit
     override fun onFailed(fileName: String, message: String?) = Unit
+    override fun onTextReceived(senderName: String, text: String) {
+        runCatching { java.awt.Toolkit.getDefaultToolkit().beep() }
+    }
 }

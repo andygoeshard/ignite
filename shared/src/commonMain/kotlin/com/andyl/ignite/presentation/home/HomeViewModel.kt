@@ -13,12 +13,14 @@ import com.andyl.ignite.domain.PairingManager
 import com.andyl.ignite.domain.TransferNotifier
 import com.andyl.ignite.domain.TransferRepository
 import com.andyl.ignite.domain.TrustPolicy
+import com.andyl.ignite.presentation.format.formatSize
 import com.andyl.ignite.domain.TrustedDevices
 import com.andyl.ignite.domain.model.Device
 import com.andyl.ignite.domain.model.Transfer
 import com.andyl.ignite.domain.model.TransferError
 import com.andyl.ignite.presentation.MviViewModel
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
@@ -27,6 +29,8 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.contentType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.delay
@@ -54,6 +58,7 @@ class HomeViewModel(
     private val trustedDevices: TrustedDevices? = null,
     private val receiverController: com.andyl.ignite.domain.ReceiverController? = null,
     private val textSender: com.andyl.ignite.domain.TextSender? = null,
+    private val clipboardMonitor: com.andyl.ignite.domain.ClipboardMonitor? = null,
     /** Drops de la ventana drop zone (desktop); null en Android. */
     externalDrops: kotlinx.coroutines.flow.Flow<List<String>>? = null,
 ) : MviViewModel<HomeEvent, HomeState, HomeEffect>() {
@@ -212,6 +217,7 @@ class HomeViewModel(
                     state.copy(
                         devices = updated,
                         selectedDevice = state.selectedDevice?.takeIf { it.id !in staleIds },
+                        selectedDevices = state.selectedDevices.filter { it.id !in staleIds }.toSet(),
                     )
                 }
                 if (!state.value.showWelcome) {
@@ -322,12 +328,15 @@ class HomeViewModel(
                             state.copy(
                                 incoming = null,
                                 recentReceived = (
-                                    listOf(ReceivedFileUi(event.fileName, finalPath, event.sizeBytes)) +
+                                    listOf(ReceivedFileUi(event.fileName, finalPath, event.sizeBytes, sha256 = event.sha256)) +
                                         state.recentReceived
                                     ).distinctBy { it.path }.take(MAX_RECENT),
                             )
                         }
                         notifyIncoming(event.peerDeviceId) { notifier.onCompleted(event.fileName, isSending = false) }
+                        if (event.sha256 != null) {
+                            showNote("✅ «${event.fileName}» recibido · SHA-256: ${event.sha256.take(16)}…")
+                        }
                     }
 
                     is IncomingEvent.Failed -> {
@@ -347,7 +356,30 @@ class HomeViewModel(
                         updateState { s ->
                             s.copy(receivedTextMessages = listOf(msg) + s.receivedTextMessages)
                         }
+                        runCatching { notifier.onTextReceived(event.senderName, event.text) }
                         showNote("📝 Mensaje de ${event.senderName}: «${event.text.take(60)}${if (event.text.length > 60) "…" else ""}»")
+                    }
+
+                    is IncomingEvent.ClipboardReceived -> {
+                        val item = com.andyl.ignite.domain.model.ClipboardItem(
+                            content = event.content,
+                            sourceName = event.senderName,
+                            sourceHost = event.peerHost,
+                            timestamp = System.currentTimeMillis(),
+                        )
+                        updateState { s ->
+                            s.copy(
+                                clipboardHistory = listOf(item) + s.clipboardHistory,
+                                lastRemoteClipboard = event.content,
+                            )
+                        }
+                        clipboardMonitor?.setText(event.content)
+                        showNote("📋 Clipboard de ${event.senderName}: «${event.content.take(40)}${if (event.content.length > 40) "…" else ""}»")
+                        // Clear the remote flag after a short delay to avoid echo
+                        viewModelScope.launch {
+                            kotlinx.coroutines.delay(1500)
+                            updateState { it.copy(lastRemoteClipboard = null) }
+                        }
                     }
                 }
             }
@@ -377,6 +409,7 @@ class HomeViewModel(
             is HomeEvent.OnFileCleared -> {
                 updateState { it.copy(pendingFiles = it.pendingFiles.filterNot { f -> f.path == event.file.path }) }
             }
+            is HomeEvent.OnFolderSelected -> onFolderSelected(event.folderPath)
             HomeEvent.OnSendClick -> send()
             HomeEvent.OnProfileClick -> updateState { it.copy(showProfileDialog = true) }
             HomeEvent.OnDialogDismiss -> updateState { it.copy(showProfileDialog = false, showWelcome = false, showPinDialog = false) }
@@ -412,13 +445,20 @@ class HomeViewModel(
                 s.copy(receivedTextMessages = s.receivedTextMessages.toMutableList().apply { removeAt(event.index) })
             }
             is HomeEvent.OnEditTextMessage -> updateState { it.copy(isTextMode = true, textInput = event.text) }
+            HomeEvent.OnToggleClipboardSync -> toggleClipboardSync()
+            is HomeEvent.OnPasteFromClipboardHistory -> {
+                val item = state.value.clipboardHistory.getOrNull(event.index) ?: return
+                clipboardMonitor?.setText(item.content)
+                showNote("Pegado: «${item.content.take(40)}…»")
+            }
+            HomeEvent.OnClearClipboardHistory -> updateState { it.copy(clipboardHistory = emptyList()) }
         }
     }
 
     /** Cancelación del usuario: transición inmediata a Cancelling, idempotente. */
     private fun cancelSend() {
         val current = state.value.sendSession
-        if (current !is SendSession.Sending) return
+        if (current !is SendSession.Sending && current !is SendSession.FanOutSending) return
         val job = sendJob ?: return
         updateState { it.copy(sendSession = SendSession.Cancelling(current)) }
         showNote("Cancelando transferencia…")
@@ -426,19 +466,27 @@ class HomeViewModel(
     }
 
     /**
-     * Selección de dispositivo: si ya le pusimos el PIN alguna vez, se precarga
-     * (auto-conexión). Si no es confiable, se limpia cualquier PIN viejo.
+     * Selección de dispositivo: toggle en el set multi-selección.
+     * Si es la primera selección y tiene PIN guardado, se precarga.
      */
     private fun onDeviceSelected(device: Device) {
+        val current = state.value.selectedDevices
+        val isCurrentlySelected = current.any { it.id == device.id }
+        val newSet = if (isCurrentlySelected) {
+            current.filter { it.id != device.id }.toSet()
+        } else {
+            current + device
+        }
         val trustedPin = runCatching { trustedDevices?.pinFor(device.id) }.getOrNull()
         updateState { state ->
             state.copy(
-                selectedDevice = device,
-                targetPin = trustedPin?.pin ?: "",
-                pinRememberedFor = trustedPin?.let { device.name },
+                selectedDevices = newSet,
+                selectedDevice = newSet.firstOrNull(), // backward compat: el primero del set
+                targetPin = if (!isCurrentlySelected && trustedPin != null) trustedPin.pin.orEmpty() else state.targetPin,
+                pinRememberedFor = if (!isCurrentlySelected && trustedPin != null) device.name else state.pinRememberedFor,
             )
         }
-        if (trustedPin != null) showNote("PIN recordado de ${device.name} — listo para enviar")
+        if (!isCurrentlySelected && trustedPin != null) showNote("PIN recordado de ${device.name} — listo para enviar")
     }
 
     private fun forgetDevice(deviceId: String, name: String) {
@@ -448,6 +496,7 @@ class HomeViewModel(
             state.copy(
                 trustedIds = state.trustedIds - deviceId,
                 devicePolicies = state.devicePolicies - deviceId,
+                selectedDevices = state.selectedDevices.filter { it.id != deviceId }.toSet(),
                 targetPin = if (state.selectedDevice?.id == deviceId) "" else state.targetPin,
                 pinRememberedFor = state.pinRememberedFor?.takeIf { state.selectedDevice?.id != deviceId },
             )
@@ -663,7 +712,7 @@ class HomeViewModel(
         val updated = (_devices.value.filterNot { it.id == device.id } + device).sortedBy { it.name.lowercase() }
         _devices.value = updated
         lastSeenByDevice[device.id] = System.currentTimeMillis()
-        updateState { it.copy(devices = updated, selectedDevice = device, manualIp = "") }
+        updateState { it.copy(devices = updated, selectedDevice = device, selectedDevices = it.selectedDevices + device, manualIp = "") }
         showNote("Conectado a ${device.name} ($ip) — ahora ingresá su PIN y enviá")
     }
 
@@ -747,13 +796,52 @@ class HomeViewModel(
         }
     }
 
+    /** Escaneo recursivo de carpeta: agrega todos los archivos con rutas relativas. */
+    private fun onFolderSelected(folderPath: String) {
+        viewModelScope.launch {
+            val folder = java.io.File(folderPath)
+            if (!folder.exists() || !folder.isDirectory) {
+                showNote("Carpeta no válida: $folderPath")
+                return@launch
+            }
+            val folderName = folder.name
+            val files = mutableListOf<PendingFile>()
+            withContext(Dispatchers.IO) {
+                folder.walkTopDown().filter { it.isFile }.forEach { file ->
+                    val relativePath = "$folderName/${file.relativeTo(folder).path}"
+                    files.add(
+                        PendingFile(
+                            path = file.absolutePath,
+                            name = file.name,
+                            sizeBytes = file.length(),
+                            relativePath = relativePath,
+                        ),
+                    )
+                }
+            }
+            if (files.isEmpty()) {
+                showNote("La carpeta «$folderName» está vacía")
+                return@launch
+            }
+            val totalSize = files.sumOf { it.sizeBytes }
+            updateState {
+                it.copy(
+                    pendingFiles = (it.pendingFiles + files).distinctBy { f -> f.path },
+                    sendOutcome = null,
+                )
+            }
+            showNote("📁 ${files.size} archivos (${formatSize(totalSize)}) de «$folderName» encolados")
+        }
+    }
+
     private fun send() {
         // #22 política de concurrencia v1: una sola sesión activa.
         if (state.value.sendSession != SendSession.Idle) {
             showNote("Ya hay una transferencia en curso — esperá que termine o cancelala")
             return
         }
-        val target = state.value.selectedDevice ?: return
+        val targets = state.value.selectedDevices.toList()
+        if (targets.isEmpty()) return
         val files = state.value.pendingFiles
         if (files.isEmpty()) return
         val pin = state.value.targetPin
@@ -763,6 +851,20 @@ class HomeViewModel(
         }
         val queueTotalBytes = files.sumOf { it.sizeBytes }
 
+        if (targets.size == 1) {
+            sendSingle(targets.first(), files, pin, queueTotalBytes)
+        } else {
+            sendFanOut(targets, files, pin, queueTotalBytes)
+        }
+    }
+
+    /** Envío single-target (flujo existente, sin cambios lógicos). */
+    private fun sendSingle(
+        target: Device,
+        files: List<PendingFile>,
+        pin: String,
+        queueTotalBytes: Long,
+    ) {
         updateState {
             it.copy(
                 sendSession = SendSession.Preparing(target.name, files.size, queueTotalBytes),
@@ -775,6 +877,7 @@ class HomeViewModel(
             var failedError: TransferError? = null
             var cancelled = false
             var completedBytes = 0L
+            var lastFileHash: String? = null
 
             for ((index, file) in files.withIndex()) {
                 updateState {
@@ -808,7 +911,7 @@ class HomeViewModel(
 
                 try {
                     var lastPersisted = 0f
-                    sendFileWithRetry(target, file, pin) { progress ->
+                    val fileHash = sendFileWithRetry(target, file, pin) { progress ->
                         val sentBytes = (file.sizeBytes * progress).toLong()
                         updateState { s ->
                             val session = s.sendSession
@@ -832,8 +935,8 @@ class HomeViewModel(
                     repository.upsert(record.copy(status = Transfer.Status.COMPLETED, progress = 1f))
                     runCatching { notifier.onCompleted(file.name, isSending = true) }
                     completedBytes += file.sizeBytes
+                    lastFileHash = fileHash
                 } catch (e: kotlinx.coroutines.CancellationException) {
-                    // Cancelación del usuario (o de la pantalla): NO es error.
                     cancelled = true
                     repository.upsert(record.copy(status = Transfer.Status.CANCELLED))
                     runCatching { notifier.onFailed(file.name, "Cancelado por el usuario") }
@@ -854,11 +957,9 @@ class HomeViewModel(
             updateState {
                 it.copy(
                     sendSession = SendSession.Idle,
-                    // En cancel conservamos la cola para reintentar fácil
                     pendingFiles = if (cancelled) it.pendingFiles else emptyList(),
                 )
             }
-            // PIN recordado: si la cola completa salió bien, este dispositivo queda emparejado
             if (!cancelled && failedFile == null) {
                 val remembered = runCatching {
                     trustedDevices?.remember(target.id, target.name, target.host, pin)
@@ -870,10 +971,9 @@ class HomeViewModel(
             }
             val outcome = when {
                 cancelled -> SendOutcome(files.first().name, target.name, success = false, cancelled = true)
-                failedFile == null -> SendOutcome(files.first().name, target.name, success = true, count = files.size)
+                failedFile == null -> SendOutcome(files.first().name, target.name, success = true, count = files.size, sha256 = lastFileHash)
                 else -> SendOutcome(failedFile!!, target.name, success = false, count = 1, error = failedError)
             }
-            // Log grepeable del resultado (logcat/consola): [Ignite][ERROR] o [Ignite][VM]
             if (!outcome.success && !outcome.cancelled) {
                 println(
                     "[Ignite][ERROR] envío de '${outcome.fileName}' a ${target.name} (${target.host}) falló: " +
@@ -881,6 +981,137 @@ class HomeViewModel(
                 )
             } else if (outcome.success) {
                 println("[Ignite][VM] envío completado: ${files.size} archivo(s) → ${target.name} OK")
+            }
+            showOutcome(outcome)
+            sendJob = null
+        }
+    }
+
+    /** Fan-out 1→N: envío paralelo a múltiples targets, un archivo a la vez. */
+    private fun sendFanOut(
+        targets: List<Device>,
+        files: List<PendingFile>,
+        pin: String,
+        queueTotalBytes: Long,
+    ) {
+        val targetNames = targets.joinToString { it.name }
+        updateState {
+            it.copy(
+                sendSession = SendSession.Preparing(targetNames, files.size, queueTotalBytes),
+                sendOutcome = null,
+            )
+        }
+
+        sendJob = viewModelScope.launch {
+            val allCompleted = mutableMapOf<String, FanOutTarget>()
+            targets.forEach { allCompleted[it.id] = FanOutTarget(deviceName = it.name, totalBytes = queueTotalBytes) }
+            var cancelled = false
+
+            for ((index, file) in files.withIndex()) {
+                if (cancelled) break
+
+                updateState {
+                    it.copy(
+                        sendSession = SendSession.FanOutSending(
+                            fileIndex = index,
+                            fileCount = files.size,
+                            fileName = file.name,
+                            targets = allCompleted.toMap(),
+                            totalBytes = queueTotalBytes,
+                        ),
+                    )
+                }
+
+                val deferreds = targets.map { target ->
+                    async {
+                        val record = Transfer(
+                            id = 0,
+                            fileName = file.name,
+                            sizeBytes = file.sizeBytes,
+                            direction = Transfer.Direction.SENT,
+                            peerName = target.name,
+                            peerHost = target.host,
+                            status = Transfer.Status.IN_PROGRESS,
+                            progress = 0f,
+                            createdAt = System.currentTimeMillis(),
+                        )
+                        repository.upsert(record)
+
+                        try {
+                            var lastPersisted = 0f
+                            val fileHash = sendFileWithRetry(target, file, pin) { progress ->
+                                val sentBytes = (file.sizeBytes * progress).toLong()
+                                allCompleted[target.id] = allCompleted[target.id]!!.copy(
+                                    progress = progress,
+                                    sentBytes = sentBytes,
+                                )
+                                updateState { s ->
+                                    val session = s.sendSession
+                                    if (session is SendSession.FanOutSending && session.fileName == file.name) {
+                                        s.copy(sendSession = session.copy(targets = allCompleted.toMap()))
+                                    } else {
+                                        s
+                                    }
+                                }
+                                if (progress - lastPersisted >= PROGRESS_PERSIST_STEP || progress >= 1f) {
+                                    lastPersisted = progress
+                                    repository.upsert(record.copy(progress = progress))
+                                }
+                            }
+                            repository.upsert(record.copy(status = Transfer.Status.COMPLETED, progress = 1f))
+                            allCompleted[target.id] = allCompleted[target.id]!!.copy(
+                                completed = true,
+                                progress = 1f,
+                                sentBytes = file.sizeBytes,
+                            )
+                            Result.success(fileHash)
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            cancelled = true
+                            repository.upsert(record.copy(status = Transfer.Status.CANCELLED))
+                            throw e
+                        } catch (e: Exception) {
+                            val error = TransferError.from(e)
+                            repository.upsert(record.copy(status = Transfer.Status.FAILED))
+                            allCompleted[target.id] = allCompleted[target.id]!!.copy(
+                                failed = true,
+                                error = error.userMessage(target.name),
+                            )
+                            println("[Ignite][VM] fan-out falló «${file.name}» → ${target.name}: ${e.message}")
+                            Result.failure(e)
+                        }
+                    }
+                }
+
+                try {
+                    deferreds.awaitAll()
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    cancelled = true
+                    break
+                }
+            }
+
+            updateState {
+                it.copy(
+                    sendSession = SendSession.Idle,
+                    pendingFiles = if (cancelled) it.pendingFiles else emptyList(),
+                )
+            }
+
+            val completedCount = allCompleted.values.count { it.completed }
+            val failedCount = allCompleted.values.count { it.failed }
+            val targetLabel = "${targets.size} dispositivos"
+
+            targets.filter { allCompleted[it.id]?.completed == true }.forEach { target ->
+                runCatching { trustedDevices?.remember(target.id, target.name, target.host, pin) }
+            }
+
+            val outcome = when {
+                cancelled -> SendOutcome(files.first().name, targetLabel, success = false, cancelled = true)
+                failedCount == 0 -> SendOutcome(files.first().name, targetLabel, success = true, count = files.size)
+                else -> {
+                    val failedTarget = allCompleted.values.firstOrNull { it.error != null }
+                    SendOutcome(files.first().name, targetLabel, success = false, count = 1, error = failedTarget?.error?.let { TransferError.Unexpected(it) })
+                }
             }
             showOutcome(outcome)
             sendJob = null
@@ -897,14 +1128,18 @@ class HomeViewModel(
         file: PendingFile,
         pin: String,
         onProgress: suspend (Float) -> Unit,
-    ) {
+    ): String? {
+        var lastException: Exception? = null
         repeat(MAX_SEND_ATTEMPTS) { attempt ->
             try {
-                sender.send(target, file.path, file.name, file.sizeBytes, pin).collect { onProgress(it) }
-                return
+                sender.send(target, file.path, file.name, file.sizeBytes, pin, file.relativePath).collect { onProgress(it) }
+                return withContext(Dispatchers.IO) {
+                    runCatching { com.andyl.ignite.data.network.sha256Transfer(file.path) }.getOrNull()
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
+                lastException = e
                 val isLastAttempt = attempt == MAX_SEND_ATTEMPTS - 1
                 // Reintentar no sirve ante PIN/rechazo/receptor ocupado (#26)
                 val error = TransferError.from(e)
@@ -918,6 +1153,7 @@ class HomeViewModel(
                 delay(backoffMs)
             }
         }
+        return null
     }
 
     /** Feedback transitorio vía effect (#28): la UI decide cómo mostrarlo. */
@@ -926,7 +1162,8 @@ class HomeViewModel(
     }
 
     private fun sendText() {
-        val target = state.value.selectedDevice ?: return
+        val targets = state.value.selectedDevices.toList()
+        if (targets.isEmpty()) return
         val text = state.value.textInput.trim()
         if (text.isBlank()) return
         val pin = state.value.targetPin
@@ -940,22 +1177,83 @@ class HomeViewModel(
         }
 
         viewModelScope.launch {
-            showNote("Enviando mensaje a ${target.name}…")
-            runCatching {
-                textSender.send(target, text, pin)
-                showNote("✅ Mensaje enviado a ${target.name}")
-                updateState { it.copy(textInput = "") }
-            }.onFailure { e ->
-                val msg = e.message ?: "error desconocido"
-                println("[Ignite][TXT] envío falló a ${target.name}: $msg")
-                showNote("No se pudo enviar el mensaje: $msg")
+            val names = targets.joinToString { it.name }
+            showNote("Enviando mensaje a $names…")
+            val results = targets.map { target ->
+                async {
+                    runCatching {
+                        textSender.send(target, text, pin)
+                        target.name
+                    }
+                }
+            }.awaitAll()
+            val ok = results.filter { it.isSuccess }.map { it.getOrNull()!! }
+            val fail = results.filter { it.isFailure }
+            if (ok.isNotEmpty()) {
+                showNote("✅ Mensaje enviado a ${ok.joinToString()}")
+            }
+            if (fail.isNotEmpty()) {
+                showNote("❌ Falló envío a ${fail.size} dispositivo(s)")
+            }
+            updateState { it.copy(textInput = "") }
+        }
+    }
+
+    private var clipboardJob: kotlinx.coroutines.Job? = null
+
+    private fun toggleClipboardSync() {
+        val newState = !state.value.clipboardSyncEnabled
+        updateState { it.copy(clipboardSyncEnabled = newState) }
+        if (newState) {
+            startClipboardSync()
+            showNote("📋 Sincronización de clipboard activada")
+        } else {
+            stopClipboardSync()
+            showNote("📋 Sincronización de clipboard desactivada")
+        }
+    }
+
+    private fun startClipboardSync() {
+        val monitor = clipboardMonitor ?: return
+        monitor.start()
+        clipboardJob = viewModelScope.launch {
+            monitor.changes.collect { text ->
+                // Don't echo back remote clipboard content
+                if (text == state.value.lastRemoteClipboard) return@collect
+                val target = state.value.selectedDevice
+                val pin = state.value.targetPin
+                if (target == null || pin.length != 6 || httpClient == null) return@collect
+                // Send clipboard to paired device
+                runCatching {
+                    httpClient.post("http://${target.host}:${target.port}/clipboard") {
+                        contentType(ContentType.Application.Json)
+                        header("X-Ignite-Pin", pin)
+                        header("X-Ignite-Device-Id", deviceInfo.deviceId)
+                        header("X-Ignite-Device-Name", deviceInfo.deviceName)
+                        setBody(kotlinx.serialization.json.Json.encodeToString(mapOf("content" to text)))
+                    }
+                    println("[Ignite][CLIP] clipboard enviado a ${target.name}: «${text.take(40)}»")
+                }.onFailure { e ->
+                    println("[Ignite][CLIP] envío clipboard falló: ${e.message}")
+                }
             }
         }
+    }
+
+    private fun stopClipboardSync() {
+        clipboardJob?.cancel()
+        clipboardJob = null
+        clipboardMonitor?.stop()
     }
 
     private fun showOutcome(outcome: SendOutcome) {
         outcomeJob?.cancel()
         updateState { it.copy(sendOutcome = outcome) }
+        if (outcome.success) {
+            val hashInfo = outcome.sha256?.let { " · SHA-256: ${it.take(16)}…" } ?: ""
+            val countInfo = if (outcome.count > 1) "${outcome.count} archivos" else "«${outcome.fileName}»"
+            showNote("✅ Enviado $countInfo a ${outcome.targetName}$hashInfo")
+        }
         outcomeJob = viewModelScope.launch {
             delay(OUTCOME_DURATION_MS)
             updateState { s -> s.copy(sendOutcome = null) }

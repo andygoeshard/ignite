@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -38,9 +39,12 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CheckBox
+import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Lock
@@ -103,6 +107,7 @@ fun HomeRoute(
     state: HomeState,
     onEvent: (HomeEvent) -> Unit,
     onPickFile: () -> Unit,
+    onPickFolder: () -> Unit = {},
     modifier: Modifier = Modifier,
     onNavigateToHistory: () -> Unit = {},
 ) {
@@ -113,6 +118,7 @@ fun HomeRoute(
             state = state,
             onEvent = onEvent,
             onPickFile = onPickFile,
+            onPickFolder = onPickFolder,
             modifier = modifier,
             onNavigateToHistory = onNavigateToHistory,
         )
@@ -124,6 +130,7 @@ fun HomeScreen(
     state: HomeState,
     onEvent: (HomeEvent) -> Unit,
     onPickFile: () -> Unit,
+    onPickFolder: () -> Unit = {},
     modifier: Modifier = Modifier,
     onNavigateToHistory: () -> Unit = {},
 ) {
@@ -200,6 +207,7 @@ fun HomeScreen(
                             state = state,
                             onEvent = onEvent,
                             onPickFile = onPickFile,
+                            onPickFolder = onPickFolder,
                             reduceMotion = reduceMotion,
                             modifier = Modifier.weight(1.15f),
                         )
@@ -218,11 +226,13 @@ fun HomeScreen(
                                 state = state,
                                 onEvent = onEvent,
                                 onPickFile = onPickFile,
+                                onPickFolder = onPickFolder,
                                 reduceMotion = reduceMotion,
                                 modifier = Modifier.fillMaxWidth(),
                             )
                             Spacer(Modifier.weight(1f))
                             ReceiveSection(state, onEvent, Modifier.fillMaxWidth())
+                            ClipboardHistorySection(state, onEvent, Modifier.fillMaxWidth())
                         }
                     }
                 }
@@ -233,6 +243,7 @@ fun HomeScreen(
                     state = state,
                     onEvent = onEvent,
                     onPickFile = onPickFile,
+                    onPickFolder = onPickFolder,
                     reduceMotion = reduceMotion,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -245,6 +256,7 @@ fun HomeScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 ReceiveSection(state, onEvent, Modifier.fillMaxWidth())
+                ClipboardHistorySection(state, onEvent, Modifier.fillMaxWidth())
             }
         }
     }
@@ -323,7 +335,7 @@ private fun DevicesCard(
                         val policy = state.devicePolicies[device.id] ?: TrustPolicy.ASK
                         DeviceRow(
                             device = device,
-                            isSelected = device.id == state.selectedDevice?.id,
+                            isSelected = device.id in state.selectedDevices.map { it.id }.toSet(),
                             isTrusted = device.id in state.trustedIds,
                             policy = policy,
                             onClick = { onEvent(HomeEvent.OnDeviceSelected(device)) },
@@ -466,6 +478,7 @@ private fun TransferCard(
     state: HomeState,
     onEvent: (HomeEvent) -> Unit,
     onPickFile: () -> Unit,
+    onPickFolder: () -> Unit = {},
     modifier: Modifier = Modifier,
     reduceMotion: Boolean = false,
 ) {
@@ -512,6 +525,7 @@ private fun TransferCard(
                 text = when (val s = state.sendSession) {
                     is SendSession.Preparing -> "Preparando"
                     is SendSession.Sending -> "Enviando"
+                    is SendSession.FanOutSending -> "Fan-out"
                     is SendSession.Cancelling -> "Cancelando"
                     SendSession.Idle -> when {
                         state.sendOutcome?.success == true -> "Completo"
@@ -540,6 +554,7 @@ private fun TransferCard(
         val phase = when (val s = state.sendSession) {
             is SendSession.Preparing -> 1
             is SendSession.Sending -> 2
+            is SendSession.FanOutSending -> 2
             is SendSession.Cancelling -> 3
             SendSession.Idle -> if (state.sendOutcome != null) 4 else 0
         }
@@ -557,7 +572,16 @@ private fun TransferCard(
         ) { _ ->
             when (val session = state.sendSession) {
                 is SendSession.Sending -> HeroProgress(session, isCancelling = false)
-                is SendSession.Cancelling -> HeroProgress(session.of, isCancelling = true)
+                is SendSession.FanOutSending -> FanOutProgress(session)
+                is SendSession.Cancelling -> {
+                    when (val of = session.of) {
+                        is SendSession.Sending -> HeroProgress(of, isCancelling = true)
+                        is SendSession.FanOutSending -> FanOutProgress(of, isCancelling = true)
+                        is SendSession.Preparing -> HeroPreparing(of.targetName)
+                        SendSession.Idle -> HeroIdle()
+                        is SendSession.Cancelling -> HeroIdle()
+                    }
+                }
                 is SendSession.Preparing -> HeroPreparing(session.targetName)
                 SendSession.Idle -> state.sendOutcome?.let { SendOutcomeRow(it) } ?: HeroIdle()
             }
@@ -635,10 +659,11 @@ private fun TransferCard(
                 Text(
                     when {
                         active -> "Enviando…"
-                        state.selectedDevice == null -> "Elegí un dispositivo"
+                        state.selectedDevices.isEmpty() -> "Elegí un dispositivo"
                         state.textInput.isBlank() -> "Escribí un mensaje"
                         state.targetPin.length != 6 -> "Ingresá el PIN"
-                        else -> "Enviar texto a ${state.selectedDevice.name}"
+                        state.selectedDevices.size == 1 -> "Enviar texto a ${state.selectedDevices.first().name}"
+                        else -> "Enviar texto a ${state.selectedDevices.size} dispositivos"
                     },
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -653,6 +678,13 @@ private fun TransferCard(
                 ) {
                     Text(if (state.pendingFiles.isEmpty()) "Agregar archivo" else "Agregar otro")
                 }
+                OutlinedButton(
+                    onClick = onPickFolder,
+                    enabled = !active,
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text("Carpeta")
+                }
                 Button(
                     onClick = { onEvent(HomeEvent.OnSendClick) },
                     enabled = state.canSend,
@@ -663,10 +695,12 @@ private fun TransferCard(
                             state.sendSession is SendSession.Preparing -> "Preparando…"
                             state.sendSession is SendSession.Cancelling -> "Cancelando…"
                             state.sendSession is SendSession.Sending -> "Enviando…"
-                            state.selectedDevice == null -> "Elegí un dispositivo"
+                            state.sendSession is SendSession.FanOutSending -> "Enviando a ${state.sendSession.totalTargets}…"
+                            state.selectedDevices.isEmpty() -> "Elegí uno o más dispositivos"
                             state.pendingFiles.isEmpty() -> "Seleccioná un archivo"
                             state.targetPin.length != 6 -> "Ingresá el PIN"
-                            else -> "Enviar a ${state.selectedDevice.name}"
+                            state.selectedDevices.size == 1 -> "Enviar a ${state.selectedDevices.first().name}"
+                            else -> "Enviar a ${state.selectedDevices.size} dispositivos"
                         },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -724,6 +758,82 @@ private fun HeroProgress(session: SendSession.Sending, isCancelling: Boolean) {
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+        if (isCancelling) {
+            Text(
+                "Cancelando…",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
+}
+
+/** Progreso fan-out 1→N: barra por cada target con estado inline. */
+@Composable
+private fun FanOutProgress(session: SendSession.FanOutSending, isCancelling: Boolean = false) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = session.fileName.ifBlank { "Preparando…" },
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = "Enviando a ${session.totalTargets} dispositivos · archivo ${session.fileIndex + 1}/${session.fileCount}",
+            style = MaterialTheme.typography.labelMedium,
+            fontFamily = FontFamily.Monospace,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        session.targets.values.forEach { target ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Icon(
+                    imageVector = when {
+                        target.completed -> Icons.Default.CheckCircle
+                        target.failed -> Icons.Default.Error
+                        else -> Icons.Default.Computer
+                    },
+                    contentDescription = null,
+                    tint = when {
+                        target.completed -> MaterialTheme.colorScheme.primary
+                        target.failed -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = target.deviceName,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.widthIn(min = 80.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                NeonProgressBar(
+                    progress = if (target.failed) 1f else target.progress,
+                    height = 6.dp,
+                    modifier = Modifier.weight(1f),
+                    color = if (target.failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = when {
+                        target.completed -> "✓"
+                        target.failed -> "✗"
+                        else -> "${(target.progress * 100).toInt()}%"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = when {
+                        target.completed -> MaterialTheme.colorScheme.primary
+                        target.failed -> MaterialTheme.colorScheme.error
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    modifier = Modifier.width(36.dp),
+                )
+            }
         }
         if (isCancelling) {
             Text(
@@ -832,6 +942,80 @@ private fun ReceiveSection(
     }
 }
 
+/** Historial de clipboard sincronizado (Fase 3). */
+@Composable
+private fun ClipboardHistorySection(
+    state: HomeState,
+    onEvent: (HomeEvent) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    AnimatedVisibility(
+        visible = state.clipboardHistory.isNotEmpty(),
+        enter = fadeIn() + expandVertically(),
+        modifier = modifier,
+    ) {
+        Surface(
+            shape = MaterialTheme.shapes.large,
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp, end = 8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "📋 Clipboard",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    TextButton(
+                        onClick = { onEvent(HomeEvent.OnClearClipboardHistory) },
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    ) {
+                        Text("Limpiar", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                state.clipboardHistory.take(5).forEachIndexed { index, item ->
+                    Surface(
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.surface,
+                        border = androidx.compose.foundation.BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = item.content,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                Text(
+                                    text = "${item.sourceName} · ${item.sourceHost}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            TextButton(
+                                onClick = { onEvent(HomeEvent.OnPasteFromClipboardHistory(index)) },
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                            ) {
+                                Text("Pegar", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /** Card base del look cyberpunk: panel oscuro, borde tenue, esquinas cortadas. */
 @Composable
 private fun NeoCard(
@@ -895,10 +1079,11 @@ private fun NeonProgressBar(
     progress: Float,
     modifier: Modifier = Modifier,
     height: Dp = 12.dp,
+    color: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.primary,
 ) {
     val track = MaterialTheme.colorScheme.surfaceContainerHighest
     val outline = MaterialTheme.colorScheme.outlineVariant
-    val fillStart = MaterialTheme.colorScheme.primary
+    val fillStart = color
     val fillEnd = MaterialTheme.colorScheme.tertiary
     val animated by animateFloatAsState(
         targetValue = progress.coerceIn(0f, 1f),
@@ -1070,6 +1255,13 @@ private fun DeviceRow(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
+                imageVector = if (isSelected) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                contentDescription = if (isSelected) "Seleccionado" else "No seleccionado",
+                tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Icon(
                 imageVector = Icons.Default.Computer,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
@@ -1176,6 +1368,18 @@ private fun RecentReceivedCard(
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSecondaryContainer,
                         )
+                        if (file.sha256 != null) {
+                            val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+                            Text(
+                                text = "SHA-256: ${file.sha256.take(16)}…",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.clickable {
+                                    clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(file.sha256))
+                                },
+                            )
+                        }
                     }
                     IconButton(onClick = { onOpenFolder(file) }) {
                         Icon(

@@ -78,6 +78,7 @@ val appModule: Module = module {
             trustedDevices = get(),
             receiverController = get(),
             textSender = get(),
+            clipboardMonitor = get(),
             externalDrops = com.andyl.ignite.data.externalDropFlow(),
         )
     }

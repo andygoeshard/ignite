@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
@@ -93,6 +94,13 @@ fun HomeEntry(onNavigateToHistory: () -> Unit) {
         vm.onEvent(HomeEvent.OnDownloadDirPicked(location))
     }
 
+    // Folder picker para enviar carpetas (Fase 3)
+    val sendFolderLauncher = rememberFolderPickerLauncher { location ->
+        if (location != null) {
+            scope.launch { vm.onEvent(HomeEvent.OnFolderSelected(location)) }
+        }
+    }
+
     Scaffold(
         modifier = Modifier.onPreviewKeyEvent { e ->
             // Atajo desktop: Ctrl+O abre el selector de archivos
@@ -114,6 +122,14 @@ fun HomeEntry(onNavigateToHistory: () -> Unit) {
                     }
                 },
                 actions = {
+                    IconButton(onClick = { vm.onEvent(HomeEvent.OnToggleClipboardSync) }) {
+                        Icon(
+                            Icons.Default.ContentPaste,
+                            contentDescription = if (state.clipboardSyncEnabled) "Desactivar sync clipboard" else "Activar sync clipboard",
+                            tint = if (state.clipboardSyncEnabled) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     IconButton(onClick = { vm.onEvent(HomeEvent.OnProfileClick) }) {
                         Icon(Icons.Default.Person, contentDescription = "Mi dispositivo")
                     }
@@ -128,6 +144,7 @@ fun HomeEntry(onNavigateToHistory: () -> Unit) {
             state = state,
             onEvent = vm::onEvent,
             onPickFile = { pickerLauncher.launch() },
+            onPickFolder = { sendFolderLauncher() },
             modifier = Modifier.padding(padding),
             onNavigateToHistory = onNavigateToHistory,
         )

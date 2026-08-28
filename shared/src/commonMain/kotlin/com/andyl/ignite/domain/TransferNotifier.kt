@@ -11,4 +11,5 @@ interface TransferNotifier {
     fun onSending(fileName: String, progress: Float, totalBytes: Long)
     fun onCompleted(fileName: String, isSending: Boolean)
     fun onFailed(fileName: String, message: String? = null)
+    fun onTextReceived(senderName: String, text: String)
 }

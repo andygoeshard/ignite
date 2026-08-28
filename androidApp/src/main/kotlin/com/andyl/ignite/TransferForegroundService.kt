@@ -30,6 +30,7 @@ class TransferForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
+        createMessageChannel()
         // Garantiza que Koin y el contexto estén listos si el sistema recrea el servicio sin pasar por Application.
         runCatching {
             if (GlobalContext.getOrNull() == null) {
@@ -82,6 +83,11 @@ class TransferForegroundService : Service() {
                     startForeground(NOTIF_ID, buildIdleNotification(currentDeviceName))
                 }
             }
+            ACTION_TEXT_RECEIVED -> {
+                val senderName = intent.getStringExtra(EXTRA_SENDER_NAME) ?: "desconocido"
+                val text = intent.getStringExtra(EXTRA_TEXT) ?: ""
+                showMessageNotification(senderName, text)
+            }
             else -> {
                 // Arranque inicial sin acción: notificación idle
                 if (action == null) {
@@ -113,6 +119,22 @@ class TransferForegroundService : Service() {
             ).apply {
                 description = "Progreso de envío/recepción de archivos en segundo plano"
                 setShowBadge(false)
+            }
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(channel)
+        }
+    }
+
+    private fun createMessageChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_MESSAGES,
+                "Mensajes Ignite",
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = "Mensajes de texto recibidos de otros dispositivos"
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 200, 100, 200)
             }
             val nm = getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(channel)
@@ -166,8 +188,26 @@ class TransferForegroundService : Service() {
             .setSmallIcon(android.R.drawable.stat_notify_error)
             .setOngoing(false)
             .setOnlyAlertOnce(true)
+            .setAutoCancel(false)
             .setContentIntent(pendingIntent)
             .build()
+    }
+
+    private fun showMessageNotification(senderName: String, text: String) {
+        val snippet = if (text.length > 200) text.take(200) + "…" else text
+        val pendingIntent = pendingMainIntent()
+        val notification = NotificationCompat.Builder(this, CHANNEL_MESSAGES)
+            .setContentTitle("Mensaje de $senderName")
+            .setContentText(snippet)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(snippet))
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setContentIntent(pendingIntent)
+            .build()
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.notify(NOTIF_ID_MSG, notification)
     }
 
     private suspend fun ensureInfrastructure() {
@@ -196,13 +236,16 @@ class TransferForegroundService : Service() {
 
     companion object {
         const val CHANNEL_ID = "ignite_transfer"
+        const val CHANNEL_MESSAGES = "ignite_messages"
         const val NOTIF_ID = 1001
+        const val NOTIF_ID_MSG = 1002
 
         const val ACTION_IDLE = "com.andyl.ignite.action.IDLE"
         const val ACTION_RECEIVING = "com.andyl.ignite.action.RECEIVING"
         const val ACTION_SENDING = "com.andyl.ignite.action.SENDING"
         const val ACTION_COMPLETED = "com.andyl.ignite.action.COMPLETED"
         const val ACTION_FAILED = "com.andyl.ignite.action.FAILED"
+        const val ACTION_TEXT_RECEIVED = "com.andyl.ignite.action.TEXT_RECEIVED"
         const val ACTION_STOP = "com.andyl.ignite.action.STOP"
 
         const val EXTRA_FILE_NAME = "fileName"
@@ -210,6 +253,8 @@ class TransferForegroundService : Service() {
         const val EXTRA_TOTAL = "total"
         const val EXTRA_DEVICE_NAME = "deviceName"
         const val EXTRA_IS_SENDING = "isSending"
+        const val EXTRA_SENDER_NAME = "senderName"
+        const val EXTRA_TEXT = "text"
 
         fun start(context: android.content.Context, deviceName: String? = null) {
             val intent = Intent(context, TransferForegroundService::class.java).apply {

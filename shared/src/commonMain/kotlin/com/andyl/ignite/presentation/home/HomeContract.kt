@@ -11,6 +11,8 @@ data class PendingFile(
     val path: String,
     val name: String,
     val sizeBytes: Long,
+    /** Ruta relativa dentro de una carpeta (vacío si es suelto). */
+    val relativePath: String = "",
 )
 
 /**
@@ -48,6 +50,7 @@ data class ReceivedFileUi(
     val fileName: String,
     val path: String,
     val sizeBytes: Long,
+    val sha256: String? = null,
 )
 
 data class SendOutcome(
@@ -57,6 +60,20 @@ data class SendOutcome(
     val count: Int = 1,
     val cancelled: Boolean = false,
     val error: TransferError? = null,
+    val sha256: String? = null,
+)
+
+/**
+ * Progreso de un target individual durante un envío fan-out 1→N.
+ */
+data class FanOutTarget(
+    val deviceName: String,
+    val progress: Float = 0f,
+    val sentBytes: Long = 0L,
+    val totalBytes: Long = 0L,
+    val completed: Boolean = false,
+    val failed: Boolean = false,
+    val error: String? = null,
 )
 
 /**
@@ -88,8 +105,23 @@ sealed interface SendSession {
         val globalProgress: Float get() = if (totalBytes > 0) globalSentBytes.toFloat() / totalBytes else 0f
     }
 
+    /** Fan-out 1→N: envío paralelo a múltiples targets. */
+    data class FanOutSending(
+        val fileIndex: Int,
+        val fileCount: Int,
+        val fileName: String,
+        val targets: Map<String, FanOutTarget>, // deviceId → progress
+        val totalBytes: Long,
+    ) : SendSession {
+        val completedTargets: Int get() = targets.count { it.value.completed || it.value.failed }
+        val totalTargets: Int get() = targets.size
+        val globalProgress: Float
+            get() = if (totalTargets == 0) 0f
+            else targets.values.sumOf { it.sentBytes }.toFloat() / totalTargets / (if (totalBytes > 0) totalBytes / totalTargets else 1L)
+    }
+
     /** El usuario pidió cancelar; el job está terminando de cerrar canales. */
-    data class Cancelling(val of: Sending) : SendSession
+    data class Cancelling(val of: SendSession) : SendSession
 }
 
 /** Transferencia que quedó a mitad cuando se cerró la app (#27). */
@@ -113,6 +145,8 @@ sealed interface HomeEvent {
     data class OnDeviceSelected(val device: Device) : HomeEvent
     data class OnFileSelected(val file: PendingFile) : HomeEvent
     data class OnFileCleared(val file: PendingFile) : HomeEvent
+    /** El usuario eligió una carpeta para enviar (escaneo recursivo). */
+    data class OnFolderSelected(val folderPath: String) : HomeEvent
     data object OnSendClick : HomeEvent
     data object OnProfileClick : HomeEvent
     data object OnDialogDismiss : HomeEvent
@@ -151,11 +185,18 @@ sealed interface HomeEvent {
     data class OnDismissTextMessage(val index: Int) : HomeEvent
     /** Editar y reenviar: pre-llena el campo de texto con el contenido recibido. */
     data class OnEditTextMessage(val text: String) : HomeEvent
+    /** Toggle sincronización de clipboard. */
+    data object OnToggleClipboardSync : HomeEvent
+    /** Pegar un item del historial de clipboard al clipboard local. */
+    data class OnPasteFromClipboardHistory(val index: Int) : HomeEvent
+    /** Limpiar historial de clipboard. */
+    data object OnClearClipboardHistory : HomeEvent
 }
 
 data class HomeState(
     val devices: List<Device> = emptyList(),
     val selectedDevice: Device? = null,
+    val selectedDevices: Set<Device> = emptySet(),
     val pendingFiles: List<PendingFile> = emptyList(),
     val isScanning: Boolean = true,
     val sendSession: SendSession = SendSession.Idle,
@@ -190,9 +231,15 @@ data class HomeState(
     val textInput: String = "",
     /** Mensajes de texto recibidos de pares. */
     val receivedTextMessages: List<TextMessageUi> = emptyList(),
+    /** Sincronización de clipboard activa. */
+    val clipboardSyncEnabled: Boolean = false,
+    /** Historial de clipboard recibido de pares. */
+    val clipboardHistory: List<com.andyl.ignite.domain.model.ClipboardItem> = emptyList(),
+    /** El clipboard local fue actualizado remotamente (para evitar eco). */
+    var lastRemoteClipboard: String? = null,
 ) {
     val canSend: Boolean
-        get() = selectedDevice != null &&
+        get() = selectedDevices.isNotEmpty() &&
             pendingFiles.isNotEmpty() &&
             sendSession is SendSession.Idle &&
             targetPin.length == 6
@@ -200,11 +247,19 @@ data class HomeState(
     val isSendActive: Boolean
         get() = sendSession !is SendSession.Idle
 
-    /** Listo para enviar texto: dispositivo seleccionado, texto no vacío, PIN de 6. */
+    /** Listo para enviar texto: al menos un dispositivo seleccionado, texto no vacío, PIN de 6. */
     val canSendText: Boolean
-        get() = selectedDevice != null &&
+        get() = selectedDevices.isNotEmpty() &&
             textInput.isNotBlank() &&
             targetPin.length == 6
+
+    /** Nombre del target para mostrar (uno o "N dispositivos"). */
+    val targetDisplayName: String
+        get() = when (selectedDevices.size) {
+            0 -> ""
+            1 -> selectedDevices.first().name
+            else -> "${selectedDevices.size} dispositivos"
+        }
 }
 
 sealed interface HomeEffect {
