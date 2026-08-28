@@ -438,13 +438,12 @@ class HomeViewModel(
             HomeEvent.OnManualConnect -> viewModelScope.launch { connectManual() }
             HomeEvent.OnCancelSend -> cancelSend()
             HomeEvent.OnDismissInterrupted -> updateState { it.copy(interrupted = emptyList()) }
-            HomeEvent.OnToggleTextMode -> updateState { it.copy(isTextMode = !it.isTextMode) }
             is HomeEvent.OnTextInputChanged -> updateState { it.copy(textInput = event.text) }
             HomeEvent.OnSendText -> sendText()
             is HomeEvent.OnDismissTextMessage -> updateState { s ->
                 s.copy(receivedTextMessages = s.receivedTextMessages.toMutableList().apply { removeAt(event.index) })
             }
-            is HomeEvent.OnEditTextMessage -> updateState { it.copy(isTextMode = true, textInput = event.text) }
+            is HomeEvent.OnEditTextMessage -> updateState { it.copy(textInput = event.text) }
             HomeEvent.OnToggleClipboardSync -> toggleClipboardSync()
             is HomeEvent.OnPasteFromClipboardHistory -> {
                 val item = state.value.clipboardHistory.getOrNull(event.index) ?: return

@@ -175,8 +175,6 @@ sealed interface HomeEvent {
     data object OnManualConnect : HomeEvent
     data object OnCancelSend : HomeEvent
     data object OnDismissInterrupted : HomeEvent
-    /** Toggle entre modo archivos y modo texto. */
-    data object OnToggleTextMode : HomeEvent
     /** Texto que el usuario está escribiendo. */
     data class OnTextInputChanged(val text: String) : HomeEvent
     /** Enviar el texto al dispositivo seleccionado. */
@@ -225,8 +223,6 @@ data class HomeState(
     val pinRememberedFor: String? = null,
     /** Política de recepción por deviceId (solo pares confiables). */
     val devicePolicies: Map<String, TrustPolicy> = emptyMap(),
-    /** Modo texto activo (vs modo archivos). */
-    val isTextMode: Boolean = false,
     /** Texto que el usuario está escribiendo para enviar. */
     val textInput: String = "",
     /** Mensajes de texto recibidos de pares. */

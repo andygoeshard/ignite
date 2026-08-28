@@ -43,7 +43,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "Ignite"
-            packageVersion = "1.0.0"
+            packageVersion = "1.5.0"
 
             macOS {
                 bundleID = "com.andyl.ignite"

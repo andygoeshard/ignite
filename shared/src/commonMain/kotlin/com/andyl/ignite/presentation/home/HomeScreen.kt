@@ -38,23 +38,35 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.AudioFile
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CheckBox
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Computer
+import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.FolderZip
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.automirrored.filled.Message
+import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.VideoFile
 import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
@@ -70,6 +82,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
@@ -92,10 +105,12 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.vector.ImageVector
 import com.andyl.ignite.domain.TrustPolicy
 import com.andyl.ignite.domain.model.Device
 import com.andyl.ignite.presentation.format.formatSize
@@ -285,7 +300,7 @@ private fun DevicesCard(
     ) {
         // Cabecera: etiqueta + spinner + mi PIN como chip regenerable
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SectionLabel("Dispositivos")
+            SectionLabel("Dispositivos", Icons.Default.Computer)
             Spacer(Modifier.width(6.dp))
             if (state.isScanning) {
                 CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.5.dp)
@@ -483,6 +498,7 @@ private fun TransferCard(
     reduceMotion: Boolean = false,
 ) {
     val active = state.sendSession !is SendSession.Idle
+    var showAddMenu by remember { mutableStateOf(false) }
 
     NeoCard(
         modifier = modifier,
@@ -490,37 +506,8 @@ private fun TransferCard(
     ) {
         // Cabecera: etiqueta + chip de estado + cancelar cuando corresponde
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SectionLabel("Transmisión")
+            SectionLabel("Transmisión", Icons.AutoMirrored.Filled.Send)
             Spacer(Modifier.width(8.dp))
-            // Toggle File | Text (Fase 3)
-            if (!active) {
-                Surface(
-                    shape = MaterialTheme.shapes.extraSmall,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                ) {
-                    Row {
-                        Text(
-                            text = "📁",
-                            style = MaterialTheme.typography.labelMedium,
-                            modifier = Modifier
-                                .clickable { if (state.isTextMode) onEvent(HomeEvent.OnToggleTextMode) }
-                                .padding(horizontal = 10.dp, vertical = 4.dp),
-                            color = if (!state.isTextMode) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            text = "💬",
-                            style = MaterialTheme.typography.labelMedium,
-                            modifier = Modifier
-                                .clickable { if (!state.isTextMode) onEvent(HomeEvent.OnToggleTextMode) }
-                                .padding(horizontal = 10.dp, vertical = 4.dp),
-                            color = if (state.isTextMode) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
             StatusChip(
                 text = when (val s = state.sendSession) {
                     is SendSession.Preparing -> "Preparando"
@@ -543,168 +530,222 @@ private fun TransferCard(
                 },
             )
             Spacer(Modifier.weight(1f))
-            if (state.sendSession is SendSession.Sending || state.sendSession is SendSession.Preparing) {
+            if (state.sendSession is SendSession.Sending ||
+                state.sendSession is SendSession.FanOutSending ||
+                state.sendSession is SendSession.Preparing
+            ) {
                 TextButton(onClick = { onEvent(HomeEvent.OnCancelSend) }) {
                     Text("Cancelar")
                 }
             }
         }
 
-        // Zona héroe: fase de sesión animada (#24); con reduce-motion sólo fade (#30)
-        val phase = when (val s = state.sendSession) {
-            is SendSession.Preparing -> 1
-            is SendSession.Sending -> 2
-            is SendSession.FanOutSending -> 2
-            is SendSession.Cancelling -> 3
-            SendSession.Idle -> if (state.sendOutcome != null) 4 else 0
-        }
-        AnimatedContent(
-            targetState = phase,
-            transitionSpec = {
-                if (reduceMotion) {
-                    fadeIn(tween(150)) togetherWith fadeOut(tween(90))
-                } else {
-                    (fadeIn(tween(150)) + slideInVertically(tween(150)) { it / 8 }) togetherWith fadeOut(tween(90))
-                }
-            },
-            label = "send-hero",
-            modifier = Modifier.fillMaxWidth(),
-        ) { _ ->
-            when (val session = state.sendSession) {
-                is SendSession.Sending -> HeroProgress(session, isCancelling = false)
-                is SendSession.FanOutSending -> FanOutProgress(session)
-                is SendSession.Cancelling -> {
-                    when (val of = session.of) {
-                        is SendSession.Sending -> HeroProgress(of, isCancelling = true)
-                        is SendSession.FanOutSending -> FanOutProgress(of, isCancelling = true)
-                        is SendSession.Preparing -> HeroPreparing(of.targetName)
-                        SendSession.Idle -> HeroIdle()
-                        is SendSession.Cancelling -> HeroIdle()
+        // Zona héroe: progreso de una sesión activa (#24); con reduce-motion sólo fade (#30)
+        if (active) {
+            val phase = when (val s = state.sendSession) {
+                is SendSession.Preparing -> 1
+                is SendSession.Sending, is SendSession.FanOutSending -> 2
+                is SendSession.Cancelling -> 3
+                SendSession.Idle -> 0
+            }
+            AnimatedContent(
+                targetState = phase,
+                transitionSpec = {
+                    if (reduceMotion) {
+                        fadeIn(tween(150)) togetherWith fadeOut(tween(90))
+                    } else {
+                        (fadeIn(tween(150)) + slideInVertically(tween(150)) { it / 8 }) togetherWith fadeOut(tween(90))
                     }
+                },
+                label = "send-hero",
+                modifier = Modifier.fillMaxWidth(),
+            ) { _ ->
+                when (val session = state.sendSession) {
+                    is SendSession.Sending -> HeroProgress(session, isCancelling = false)
+                    is SendSession.FanOutSending -> FanOutProgress(session)
+                    is SendSession.Cancelling -> {
+                        when (val of = session.of) {
+                            is SendSession.Sending -> HeroProgress(of, isCancelling = true)
+                            is SendSession.FanOutSending -> FanOutProgress(of, isCancelling = true)
+                            is SendSession.Preparing -> HeroPreparing(of.targetName)
+                            SendSession.Idle, is SendSession.Cancelling -> {}
+                        }
+                    }
+                    is SendSession.Preparing -> HeroPreparing(session.targetName)
+                    SendSession.Idle -> {}
                 }
-                is SendSession.Preparing -> HeroPreparing(session.targetName)
-                SendSession.Idle -> state.sendOutcome?.let { SendOutcomeRow(it) } ?: HeroIdle()
             }
         }
 
-        // Cola compacta (sólo cuando no hay envío activo ocupando la zona héroe)
-        if (state.pendingFiles.isNotEmpty() && !active && !state.isTextMode) {
+        if (!active) {
+            // Resultado del último envío (completo / error / cancelado)
+            state.sendOutcome?.let { SendOutcomeRow(it) }
+
+            // ── Sub-card: mensaje de texto ──
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                state.pendingFiles.forEach { file ->
-                    QueueRow(file = file, onClear = { onEvent(HomeEvent.OnFileCleared(file)) })
-                }
-                if (state.pendingFiles.size > 1) {
-                    Text(
-                        text = "${state.pendingFiles.size} archivos · ${formatSize(state.pendingFiles.sumOf { it.sizeBytes })} en total",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontFamily = FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.primary,
-                    )
-                }
-            }
-        }
-
-        // Campo de texto (modo texto, Fase 3)
-        if (state.isTextMode && !active) {
-            OutlinedTextField(
-                value = state.textInput,
-                onValueChange = { onEvent(HomeEvent.OnTextInputChanged(it)) },
-                label = { Text("Escribí un mensaje") },
-                placeholder = { Text("Hola, mirá esto…") },
-                maxLines = 4,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Text(
-                text = "${state.textInput.length} caracteres",
-                style = MaterialTheme.typography.labelSmall,
-                fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        // PIN del receptor + pista de PIN recordado
-        if (state.selectedDevice != null) {
-            OutlinedTextField(
-                value = state.targetPin,
-                onValueChange = { onEvent(HomeEvent.OnTargetPinChanged(it)) },
-                label = { Text("PIN del receptor (6 dígitos)") },
-                placeholder = { Text("Ej: ${state.myPin}") },
-                singleLine = true,
-                textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            if (state.targetPin.isNotEmpty() && state.targetPin.length != 6) {
-                Text(
-                    "El PIN debe ser de 6 dígitos",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            } else if (state.pinRememberedFor == state.selectedDevice.name) {
-                Text(
-                    "Usando el PIN recordado de ${state.selectedDevice.name}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-        }
-
-        // Acciones
-        if (state.isTextMode) {
-            Button(
-                onClick = { onEvent(HomeEvent.OnSendText) },
-                enabled = state.canSendText && !active,
-                modifier = Modifier.fillMaxWidth(),
+            TransmitSubCard(
+                title = "Mensaje de texto",
+                icon = Icons.AutoMirrored.Filled.Message,
             ) {
-                Text(
-                    when {
-                        active -> "Enviando…"
-                        state.selectedDevices.isEmpty() -> "Elegí un dispositivo"
-                        state.textInput.isBlank() -> "Escribí un mensaje"
-                        state.targetPin.length != 6 -> "Ingresá el PIN"
-                        state.selectedDevices.size == 1 -> "Enviar texto a ${state.selectedDevices.first().name}"
-                        else -> "Enviar texto a ${state.selectedDevices.size} dispositivos"
-                    },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                OutlinedTextField(
+                    value = state.textInput,
+                    onValueChange = { onEvent(HomeEvent.OnTextInputChanged(it)) },
+                    label = { Text("Escribí un mensaje") },
+                    placeholder = { Text("Hola, mirá esto…") },
+                    maxLines = 4,
+                    modifier = Modifier.fillMaxWidth(),
                 )
-            }
-        } else {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedButton(
-                    onClick = onPickFile,
-                    enabled = !active,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text(if (state.pendingFiles.isEmpty()) "Agregar archivo" else "Agregar otro")
-                }
-                OutlinedButton(
-                    onClick = onPickFolder,
-                    enabled = !active,
-                    modifier = Modifier.weight(1f),
-                ) {
-                    Text("Carpeta")
-                }
+                Text(
+                    text = "${state.textInput.length} caracteres",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Button(
-                    onClick = { onEvent(HomeEvent.OnSendClick) },
-                    enabled = state.canSend,
-                    modifier = Modifier.weight(1.4f),
+                    onClick = { onEvent(HomeEvent.OnSendText) },
+                    enabled = state.canSendText && !active,
+                    modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
                         when {
-                            state.sendSession is SendSession.Preparing -> "Preparando…"
-                            state.sendSession is SendSession.Cancelling -> "Cancelando…"
-                            state.sendSession is SendSession.Sending -> "Enviando…"
-                            state.sendSession is SendSession.FanOutSending -> "Enviando a ${state.sendSession.totalTargets}…"
-                            state.selectedDevices.isEmpty() -> "Elegí uno o más dispositivos"
-                            state.pendingFiles.isEmpty() -> "Seleccioná un archivo"
+                            state.selectedDevices.isEmpty() -> "Elegí un dispositivo"
+                            state.textInput.isBlank() -> "Escribí un mensaje"
                             state.targetPin.length != 6 -> "Ingresá el PIN"
-                            state.selectedDevices.size == 1 -> "Enviar a ${state.selectedDevices.first().name}"
-                            else -> "Enviar a ${state.selectedDevices.size} dispositivos"
+                            state.selectedDevices.size == 1 -> "Enviar texto a ${state.selectedDevices.first().name}"
+                            else -> "Enviar texto a ${state.selectedDevices.size} dispositivos"
                         },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                }
+            }
+
+            // ── Sub-card: archivos ──
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            TransmitSubCard(
+                title = "Archivos",
+                icon = Icons.Default.Folder,
+            ) {
+                if (state.pendingFiles.isEmpty()) {
+                    Text(
+                        text = "Arrastrá archivos acá o tocá «Agregar»",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        state.pendingFiles.forEach { file ->
+                            QueueRow(file = file, onClear = { onEvent(HomeEvent.OnFileCleared(file)) })
+                        }
+                        if (state.pendingFiles.size > 1) {
+                            Text(
+                                text = "${state.pendingFiles.size} archivos · ${formatSize(state.pendingFiles.sumOf { it.sizeBytes })} en total",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    Box(modifier = Modifier.weight(1f)) {
+                        OutlinedButton(
+                            onClick = { showAddMenu = true },
+                            enabled = !active,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (state.pendingFiles.isEmpty()) "Agregar" else "Agregar otro")
+                            Spacer(Modifier.width(4.dp))
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null, modifier = Modifier.size(16.dp))
+                        }
+                        DropdownMenu(
+                            expanded = showAddMenu,
+                            onDismissRequest = { showAddMenu = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Archivo") },
+                                leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) },
+                                onClick = {
+                                    showAddMenu = false
+                                    onPickFile()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Carpeta") },
+                                leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null) },
+                                onClick = {
+                                    showAddMenu = false
+                                    onPickFolder()
+                                },
+                            )
+                        }
+                    }
+                    Button(
+                        onClick = { onEvent(HomeEvent.OnSendClick) },
+                        enabled = state.canSend && !active,
+                        modifier = Modifier.weight(1.4f),
+                    ) {
+                        Text(
+                            when {
+                                state.selectedDevices.isEmpty() -> "Elegí uno o más dispositivos"
+                                state.pendingFiles.isEmpty() -> "Seleccioná un archivo"
+                                state.targetPin.length != 6 -> "Ingresá el PIN"
+                                state.selectedDevices.size == 1 -> "Enviar a ${state.selectedDevices.first().name}"
+                                else -> "Enviar a ${state.selectedDevices.size} dispositivos"
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+
+            // ── PIN del receptor, compacto ──
+            if (state.selectedDevices.isNotEmpty()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    OutlinedTextField(
+                        value = state.targetPin,
+                        onValueChange = { onEvent(HomeEvent.OnTargetPinChanged(it)) },
+                        placeholder = { Text("PIN 6 dígitos") },
+                        isError = state.targetPin.isNotEmpty() && state.targetPin.length != 6,
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace),
+                        modifier = Modifier.widthIn(min = 150.dp),
+                    )
+                    when {
+                        state.targetPin.isNotEmpty() && state.targetPin.length != 6 ->
+                            Text(
+                                "Necesita 6 dígitos",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        state.selectedDevices.size == 1 && state.pinRememberedFor == state.selectedDevices.first().name ->
+                            Text(
+                                "PIN recordado de ${state.selectedDevices.first().name}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        state.selectedDevices.size == 1 ->
+                            Text(
+                                "Receptor: ${state.selectedDevices.first().name}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        else ->
+                            Text(
+                                "${state.selectedDevices.size} dispositivos elegidos",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                    }
                 }
             }
         }
@@ -860,20 +901,44 @@ private fun HeroPreparing(targetName: String) {
     }
 }
 
+/** Sub-panel de Transmisión: mini-card con título y contenido propio. */
 @Composable
-private fun HeroIdle() {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.padding(vertical = 8.dp)) {
-        Text(
-            text = "Listo para transmitir.",
-            style = MaterialTheme.typography.bodyMedium,
-        )
-        Text(
-            text = "Agregá archivos y elegí un destino.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+private fun TransmitSubCard(
+    title: String,
+    icon: ImageVector,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            SectionLabel(title, icon)
+            content()
+        }
     }
 }
+
+/** Ícono según el tipo de archivo (por extensión). */
+private fun fileIcon(name: String): ImageVector = when {
+    name.matches(IMG_REGEX) -> Icons.Default.Image
+    name.matches(VIDEO_REGEX) -> Icons.Default.VideoFile
+    name.matches(AUDIO_REGEX) -> Icons.Default.AudioFile
+    name.matches(ARCHIVE_REGEX) -> Icons.Default.FolderZip
+    name.matches(PDF_REGEX) -> Icons.Default.PictureAsPdf
+    else -> Icons.Default.Description
+}
+
+private val IMG_REGEX = Regex(""".*\.(jpe?g|png|gif|webp|bmp|svg|avif|heic|tiff?)$""", RegexOption.IGNORE_CASE)
+private val VIDEO_REGEX = Regex(""".*\.(mp4|mkv|avi|mov|webm|wmv|flv)$""", RegexOption.IGNORE_CASE)
+private val AUDIO_REGEX = Regex(""".*\.(mp3|wav|ogg|flac|m4a|aac|opus)$""", RegexOption.IGNORE_CASE)
+private val ARCHIVE_REGEX = Regex(""".*\.(zip|tar|gz|rar|7z|bz2|xz)$""", RegexOption.IGNORE_CASE)
+private val PDF_REGEX = Regex(""".*\.pdf$""", RegexOption.IGNORE_CASE)
 
 /** Fila compacta de la cola de archivos a enviar. */
 @Composable
@@ -883,7 +948,7 @@ private fun QueueRow(file: PendingFile, onClear: () -> Unit) {
         modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
     ) {
         Icon(
-            Icons.Default.Description,
+            fileIcon(file.name),
             contentDescription = null,
             tint = MaterialTheme.colorScheme.primary,
             modifier = Modifier.size(16.dp),
@@ -962,11 +1027,7 @@ private fun ClipboardHistorySection(
         ) {
             Column(modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp, end = 8.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "📋 Clipboard",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
+                    SectionLabel("Clipboard", Icons.Default.ContentPaste)
                     Spacer(Modifier.weight(1f))
                     TextButton(
                         onClick = { onEvent(HomeEvent.OnClearClipboardHistory) },
@@ -1041,15 +1102,29 @@ private fun NeoCard(
 
 /** Etiqueta de sección: mono, mayúsculas, tracking amplio. */
 @Composable
-private fun SectionLabel(text: String, modifier: Modifier = Modifier) {
-    Text(
-        text = text.uppercase(),
-        style = MaterialTheme.typography.labelMedium,
-        fontFamily = FontFamily.Monospace,
-        letterSpacing = 2.sp,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = modifier,
-    )
+private fun SectionLabel(
+    text: String,
+    icon: ImageVector? = null,
+    modifier: Modifier = Modifier,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier) {
+        if (icon != null) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(14.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+        }
+        Text(
+            text = text.uppercase(),
+            style = MaterialTheme.typography.labelMedium,
+            fontFamily = FontFamily.Monospace,
+            letterSpacing = 2.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 /** Chip de estado: cut-corner, texto mono en mayúsculas. */

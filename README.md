@@ -25,9 +25,10 @@ Punto a punto, entre dispositivos de la misma red Wi-Fi.
 - 📤 **Enviar en un toque** — cola de varios archivos, arrastrar y soltar en Desktop, atajo `Ctrl+O`.
 - 📁 **Enviar carpetas** — seleccioná una carpeta y se envía entera preservando la estructura de subdirectorios en el receptor.
 - 📡 **Fan-out 1→N** — enviá el mismo archivo a múltiples dispositivos en paralelo. Progreso en vivo por cada target.
-- 📨 **Push de texto** — modo rápido para mandar notas de texto sin archivos. Toggle 📁/💬 en la tarjeta de transmisión.
+- 📨 **Push de texto** — card "Mensaje de texto" siempre visible en Transmisión: escribí, elegí destino y enviá. Sin toggles.
 - 📋 **Clipboard sync** — sincronización automática del clipboard entre dispositivos emparejados. Historial de los últimos 5 items.
 - 🔒 **SHA-256 visible** — hash de integridad visible tanto al enviar como al recibir (tap para copiar).
+- 🎛️ **Transmisión rediseñada (v1.5)** — dos sub-cards en la tarjeta de transmisión: "Mensaje de texto" arriba y "Archivos" abajo, cada una con su propio botón de envío. PIN compacto y compartido al pie.
 - ⏸️ **Cancelar y reanudar** — cortá un envío o una recepción en cualquier momento; si la app se cerró a mitad de transferencia, al volver te lo avisa y retoma donde quedó.
 - ♻️ **Anti-duplicados** — cada archivo tiene un ID estable (`SHA-256` de nombre+tamaño): reintentos y reconexiones no generan copias "(1)", "(2)".
 - 📊 **Progreso neón en tiempo real** — barra con degradado verde→cian por archivo y total del lote, bytes transferidos y porcentaje.
@@ -59,7 +60,7 @@ Punto a punto, entre dispositivos de la misma red Wi-Fi.
 |---|---|
 | 📁 Carpetas | Envío de carpetas completas con estructura preservada. Header `X-Ignite-Relative-Path` mantiene el árbol de subdirectorios. |
 | 📡 Fan-out 1→N | Multi-selección de dispositivos, envío paralelo con `async/awaitAll`, progreso por target. |
-| 📨 Push de texto | Toggle 📁/💬, `POST /message`, sin aprobación, notificación con sonido. |
+| 📨 Push de texto | Card "Mensaje de texto" siempre visible en Transmisión, `POST /message`, sin aprobación, notificación con sonido. |
 | 📋 Clipboard sync | `ClipboardMonitor` expect/actual (AWT polling / Android listener), `POST /clipboard`, historial. |
 | 🔒 SHA-256 visible | Hash calculado durante transferencia, visible en "Recibidos recientemente" y snackbar. Tap para copiar. |
 
